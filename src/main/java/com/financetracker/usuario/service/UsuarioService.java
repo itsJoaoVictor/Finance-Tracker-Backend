@@ -1,0 +1,76 @@
+package com.financetracker.usuario.service;
+
+import com.financetracker.usuario.dto.UsuarioRegisterRequest;
+import com.financetracker.usuario.entity.Usuario;
+import com.financetracker.usuario.repository.UsuarioRepository;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
+
+@Service
+public class UsuarioService {
+
+	private final UsuarioRepository usuarioRepository;
+
+	public UsuarioService(UsuarioRepository usuarioRepository) {
+		this.usuarioRepository = usuarioRepository;
+	}
+
+	public void register(UsuarioRegisterRequest request) {
+		validateRequest(request);
+
+		if (usuarioRepository.existsByEmail(request.email())) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already exists");
+		}
+
+		String nome = deriveNomeFromEmail(request.email());
+		Usuario usuario = new Usuario(nome, request.email(), request.password());
+		usuarioRepository.save(usuario);
+	}
+
+	private void validateRequest(UsuarioRegisterRequest request) {
+		if (request == null) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid payload");
+		}
+
+		if (isBlank(request.email()) || isBlank(request.password()) || isBlank(request.confirmPassword())) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Required fields missing");
+		}
+
+		if (!request.password().equals(request.confirmPassword())) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Passwords do not match");
+		}
+
+		if (!isValidEmail(request.email())) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
+		}
+
+		if (!isStrongPassword(request.password())) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Weak password");
+		}
+	}
+
+	private boolean isBlank(String value) {
+		return value == null || value.trim().isEmpty();
+	}
+
+	private boolean isValidEmail(String email) {
+		return email.matches("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$");
+	}
+
+	private boolean isStrongPassword(String password) {
+		boolean hasUpper = password.matches(".*[A-Z].*");
+		boolean hasLower = password.matches(".*[a-z].*");
+		boolean hasDigit = password.matches(".*\\d.*");
+		boolean hasSpecial = password.matches(".*[^A-Za-z0-9].*");
+		return password.length() >= 8 && hasUpper && hasLower && hasDigit && hasSpecial;
+	}
+
+	private String deriveNomeFromEmail(String email) {
+		int atIndex = email.indexOf('@');
+		if (atIndex <= 0) {
+			return "Usuario";
+		}
+		return email.substring(0, atIndex);
+	}
+}

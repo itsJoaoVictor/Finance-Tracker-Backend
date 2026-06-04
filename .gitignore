@@ -1,0 +1,70 @@
+# Target directory (Maven build output)
+target/
+bin/
+build/
+out/
+
+# Compiled Java files
+*.class
+*.jar
+*.war
+*.ear
+
+# Logs
+*.log
+logs/
+
+# Database / Local DB
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/Editor settings
+.idea/
+*.iml
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables & Local configuration
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# Security/Credentials/Keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.der
+credentials.json
+secrets.json
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+authorized_keys
+know_hosts
+
+# Crash dumps
+drwtsn32.log
+user.dmp
+sys.dmp
+*.stackdump
+
+Contexto/
+
