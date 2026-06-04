@@ -1,5 +1,7 @@
 package com.financetracker.usuario.controller;
 
+import com.financetracker.usuario.dto.LoginRequest;
+import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
 import com.financetracker.usuario.service.UsuarioService;
 import org.springframework.http.HttpStatus;
@@ -23,5 +25,11 @@ public class UsuarioController {
 	public ResponseEntity<Void> register(@RequestBody UsuarioRegisterRequest request) {
 		usuarioService.register(request);
 		return ResponseEntity.status(HttpStatus.CREATED).build();
+	}
+
+	@PostMapping("/login")
+	public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest request) {
+		LoginResponse response = usuarioService.login(request);
+		return ResponseEntity.ok(response);
 	}
 }

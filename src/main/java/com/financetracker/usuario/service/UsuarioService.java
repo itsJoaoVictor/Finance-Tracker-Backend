@@ -1,9 +1,13 @@
 package com.financetracker.usuario.service;
 
+import com.financetracker.security.TokenService;
+import com.financetracker.usuario.dto.LoginRequest;
+import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -11,9 +15,29 @@ import org.springframework.web.server.ResponseStatusException;
 public class UsuarioService {
 
 	private final UsuarioRepository usuarioRepository;
+	private final PasswordEncoder passwordEncoder;
+	private final TokenService tokenService;
 
-	public UsuarioService(UsuarioRepository usuarioRepository) {
+	public UsuarioService(UsuarioRepository usuarioRepository, PasswordEncoder passwordEncoder, TokenService tokenService) {
 		this.usuarioRepository = usuarioRepository;
+		this.passwordEncoder = passwordEncoder;
+		this.tokenService = tokenService;
+	}
+
+	public LoginResponse login(LoginRequest request) {
+		if (request == null || isBlank(request.email()) || isBlank(request.password())) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Required fields missing");
+		}
+
+		Usuario usuario = usuarioRepository.findByEmail(request.email())
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
+
+		if (!passwordEncoder.matches(request.password(), usuario.getSenha())) {
+			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+		}
+
+		String token = tokenService.generateToken(usuario.getEmail());
+		return new LoginResponse(token);
 	}
 
 	public void register(UsuarioRegisterRequest request) {
@@ -24,7 +48,8 @@ public class UsuarioService {
 		}
 
 		String nome = deriveNomeFromEmail(request.email());
-		Usuario usuario = new Usuario(nome, request.email(), request.password());
+		String encodedPassword = passwordEncoder.encode(request.password());
+		Usuario usuario = new Usuario(nome, request.email(), encodedPassword);
 		usuarioRepository.save(usuario);
 	}
 
