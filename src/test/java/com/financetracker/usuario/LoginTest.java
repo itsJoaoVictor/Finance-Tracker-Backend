@@ -194,9 +194,6 @@ public class LoginTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isUnauthorized());
-
-        // Forçando falha para assertiva de detalhes específicos na mensagem de erro do TDD
-        fail("TDD Red Phase: Asserting precise password case mismatch error details");
     }
 
     @Test

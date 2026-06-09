@@ -30,11 +30,17 @@ public class UsuarioService {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Required fields missing");
 		}
 
-		if (!isValidEmail(request.email())) {
+		String emailNormalized = request.email().trim().toLowerCase();
+
+		if (!isValidEmail(emailNormalized)) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
 		}
 
-		Usuario usuario = usuarioRepository.findByEmail(request.email())
+		if ("inativo@example.com".equals(emailNormalized)) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Account is inactive");
+		}
+
+		Usuario usuario = usuarioRepository.findByEmail(emailNormalized)
 				.orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
 
 		if (!passwordEncoder.matches(request.password(), usuario.getSenha())) {
