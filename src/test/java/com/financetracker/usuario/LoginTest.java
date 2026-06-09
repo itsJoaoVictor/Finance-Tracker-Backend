@@ -19,6 +19,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.springframework.test.context.ActiveProfiles;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -27,6 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@ActiveProfiles("test")
 public class LoginTest {
 
     @Autowired
@@ -62,9 +65,6 @@ public class LoginTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isOk());
-
-        // Forçando falha na fase vermelha (T) do TDD
-        fail("TDD Red Phase: Force fail valid login to verify test execution in red phase");
     }
 
     @Test
@@ -78,9 +78,6 @@ public class LoginTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isUnauthorized());
-
-        // Forçando falha na fase vermelha (T) do TDD para assertivas específicas de mensagem
-        fail("TDD Red Phase: Asserting structured error message for incorrect password");
     }
 
     @Test
@@ -108,9 +105,6 @@ public class LoginTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isBadRequest());
-
-        // Forçando falha exigindo corpo de resposta estruturado de erro específico para campos vazios
-        fail("TDD Red Phase: Asserting structured error details for empty fields");
     }
 
     @Test

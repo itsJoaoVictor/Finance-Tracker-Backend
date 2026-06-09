@@ -4,6 +4,7 @@ import com.financetracker.usuario.dto.LoginRequest;
 import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
 import com.financetracker.usuario.service.UsuarioService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,13 +23,13 @@ public class UsuarioController {
 	}
 
 	@PostMapping("/register")
-	public ResponseEntity<Void> register(@RequestBody UsuarioRegisterRequest request) {
+	public ResponseEntity<Void> register(@Valid @RequestBody UsuarioRegisterRequest request) {
 		usuarioService.register(request);
 		return ResponseEntity.status(HttpStatus.CREATED).build();
 	}
 
 	@PostMapping("/login")
-	public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest request) {
+	public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
 		LoginResponse response = usuarioService.login(request);
 		return ResponseEntity.ok(response);
 	}

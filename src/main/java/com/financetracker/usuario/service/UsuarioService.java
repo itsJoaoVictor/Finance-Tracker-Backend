@@ -6,6 +6,7 @@ import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
+import com.financetracker.usuario.util.PasswordUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,10 @@ public class UsuarioService {
 	public LoginResponse login(LoginRequest request) {
 		if (request == null || isBlank(request.email()) || isBlank(request.password())) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Required fields missing");
+		}
+
+		if (!isValidEmail(request.email())) {
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
 		}
 
 		Usuario usuario = usuarioRepository.findByEmail(request.email())
@@ -70,7 +75,7 @@ public class UsuarioService {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
 		}
 
-		if (!isStrongPassword(request.password())) {
+		if (!PasswordUtils.isStrongPassword(request.password())) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Weak password");
 		}
 	}
@@ -81,14 +86,6 @@ public class UsuarioService {
 
 	private boolean isValidEmail(String email) {
 		return email.matches("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$");
-	}
-
-	private boolean isStrongPassword(String password) {
-		boolean hasUpper = password.matches(".*[A-Z].*");
-		boolean hasLower = password.matches(".*[a-z].*");
-		boolean hasDigit = password.matches(".*\\d.*");
-		boolean hasSpecial = password.matches(".*[^A-Za-z0-9].*");
-		return password.length() >= 8 && hasUpper && hasLower && hasDigit && hasSpecial;
 	}
 
 	private String deriveNomeFromEmail(String email) {

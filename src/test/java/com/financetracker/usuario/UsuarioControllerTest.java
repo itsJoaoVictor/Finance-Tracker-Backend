@@ -13,6 +13,8 @@ import org.junit.jupiter.api.BeforeEach;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import com.financetracker.usuario.entity.Usuario;
 
+import org.springframework.test.context.ActiveProfiles;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -21,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@ActiveProfiles("test")
 public class UsuarioControllerTest {
 
     @Autowired
@@ -35,10 +38,14 @@ public class UsuarioControllerTest {
     @Autowired
     private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private com.financetracker.security.RateLimitingFilter rateLimitingFilter;
+
     @BeforeEach
     void setUp() {
         usuarioRepository.deleteAll();
         usuarioRepository.save(new Usuario("existente", "existente@example.com", passwordEncoder.encode("SenhaForte123!")));
+        rateLimitingFilter.resetLimits();
     }
 
     @Test
@@ -210,5 +217,30 @@ public class UsuarioControllerTest {
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/protegido")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("Teste 13: Rate Limiting no Cadastro deve retornar 429 após 5 tentativas de cadastro por IP")
+    void rateLimitingCadastroBloqueiaAposExcederLimite() throws Exception {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("email", "novo.usuario@example.com");
+        payload.put("password", "SenhaForte123!");
+        payload.put("confirmPassword", "SenhaForte123!");
+
+        // Faz 5 tentativas bem-sucedidas de requisições de cadastro (com e-mails diferentes para evitar Conflict 409)
+        for (int i = 1; i <= 5; i++) {
+            payload.put("email", "usuario.rate" + i + "@example.com");
+            mockMvc.perform(post("/usuarios/register")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(payload)))
+                    .andExpect(status().isCreated());
+        }
+
+        // A 6ª tentativa deve retornar 429 Too Many Requests (Status status().isTooManyRequests() ou status().value(429))
+        payload.put("email", "usuario.rate6@example.com");
+        mockMvc.perform(post("/usuarios/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isTooManyRequests());
     }
 }
