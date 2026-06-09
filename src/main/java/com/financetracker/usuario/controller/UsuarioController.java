@@ -31,6 +31,9 @@ public class UsuarioController {
 	@PostMapping("/login")
 	public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
 		LoginResponse response = usuarioService.login(request);
+		if (Boolean.TRUE.equals(response.twoFactorRequired())) {
+			return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+		}
 		return ResponseEntity.ok(response);
 	}
 }

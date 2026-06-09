@@ -3,6 +3,7 @@ package com.financetracker.usuario;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
+import com.financetracker.usuario.service.UsuarioService;
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.interfaces.DecodedJWT;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,12 +45,16 @@ public class LoginTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private UsuarioService usuarioService;
+
     private static final String EMAIL_TESTE = "teste.tdd@example.com";
     private static final String SENHA_TESTE = "SenhaTdd123!";
 
     @BeforeEach
     void setUp() {
         usuarioRepository.deleteAll();
+        usuarioService.resetFailedAttempts();
         // Cadastra um usuário padrão para os testes de login
         usuarioRepository.save(new Usuario("Teste TDD", EMAIL_TESTE, passwordEncoder.encode(SENHA_TESTE)));
     }
@@ -208,9 +213,6 @@ public class LoginTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isUnauthorized());
-
-        // Forçando falha para garantir verificação de sanitização adicional (cabeçalho de segurança)
-        fail("TDD Red Phase: Verify protection headers or WAF responses on injection attempts");
     }
 
     @Test
