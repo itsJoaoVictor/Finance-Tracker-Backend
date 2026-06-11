@@ -25,34 +25,79 @@ public class UsuarioService {
 		this.tokenService = tokenService;
 	}
 
+	private final java.util.concurrent.ConcurrentHashMap<String, Integer> failedAttempts = new java.util.concurrent.ConcurrentHashMap<>();
+
+	private boolean isSqlInjection(String input) {
+		if (input == null) return false;
+		String upper = input.toUpperCase();
+		return upper.contains("' OR") || upper.contains("' --") || upper.contains("SELECT") || upper.contains("UNION") || upper.contains("--");
+	}
+
+	public void resetFailedAttempts() {
+		failedAttempts.clear();
+	}
+
 	public LoginResponse login(LoginRequest request) {
-		if (request == null || isBlank(request.email()) || isBlank(request.password())) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Required fields missing");
+		if (isSqlInjection(request.email()) || isSqlInjection(request.password())) {
+			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Credenciais invalidas");
 		}
 
-		if (!isValidEmail(request.email())) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
+		String emailNormalized = request.email().trim().toLowerCase();
+
+		if (failedAttempts.getOrDefault(emailNormalized, 0) >= 5) {
+			throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Muitas tentativas de login");
 		}
 
-		Usuario usuario = usuarioRepository.findByEmail(request.email())
-				.orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
+		Usuario usuario = usuarioRepository.findByEmail(emailNormalized).orElse(null);
 
-		if (!passwordEncoder.matches(request.password(), usuario.getSenha())) {
-			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+		String passwordHash = (usuario != null) ? usuario.getSenha() : "$2a$10$bRy89Hq6p.5Z5r7O94411.eN3xPecT18hV5xVdf4Bv4D/t4r06wK2";
+		boolean passwordMatches = passwordEncoder.matches(request.password(), passwordHash);
+
+		if (usuario == null || !passwordMatches) {
+			failedAttempts.put(emailNormalized, failedAttempts.getOrDefault(emailNormalized, 0) + 1);
+			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Credenciais invalidas");
 		}
 
-		String token = tokenService.generateToken(usuario.getEmail());
-		return new LoginResponse(token);
+		if (!usuario.isAtivo()) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Conta inativa");
+		}
+
+		if (!usuario.isVerificado()) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Conta nao verificada");
+		}
+
+		if (usuario.isBloqueado()) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Conta bloqueada");
+		}
+
+		if (usuario.isSenhaExpirada()) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Senha expirada");
+		}
+
+		if (usuario.isMfaHabilitado()) {
+			return new LoginResponse(null, null, null, true);
+		}
+
+		failedAttempts.remove(emailNormalized);
+
+		String token = tokenService.generateToken(usuario);
+		String accessToken = token;
+		String refreshToken = java.util.UUID.randomUUID().toString();
+		return new LoginResponse(token, accessToken, refreshToken, null);
 	}
 
 	public void register(UsuarioRegisterRequest request) {
 		validateRequest(request);
 
 		if (usuarioRepository.existsByEmail(request.email())) {
-			throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already exists");
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "E-mail ja cadastrado");
 		}
 
-		String nome = deriveNomeFromEmail(request.email());
+		if (usuarioRepository.existsByNome(request.name())) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "Nome ja cadastrado");
+		}
+
+		String nome = request.name();
 		String encodedPassword = passwordEncoder.encode(request.password());
 		Usuario usuario = new Usuario(nome, request.email(), encodedPassword);
 		usuarioRepository.save(usuario);
@@ -60,32 +105,16 @@ public class UsuarioService {
 
 	private void validateRequest(UsuarioRegisterRequest request) {
 		if (request == null) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid payload");
-		}
-
-		if (isBlank(request.email()) || isBlank(request.password()) || isBlank(request.confirmPassword())) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Required fields missing");
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Dados invalidos");
 		}
 
 		if (!request.password().equals(request.confirmPassword())) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Passwords do not match");
-		}
-
-		if (!isValidEmail(request.email())) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid email");
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "As senhas nao coincidem");
 		}
 
 		if (!PasswordUtils.isStrongPassword(request.password())) {
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Weak password");
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Senha fraca");
 		}
-	}
-
-	private boolean isBlank(String value) {
-		return value == null || value.trim().isEmpty();
-	}
-
-	private boolean isValidEmail(String email) {
-		return email.matches("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$");
 	}
 
 	private String deriveNomeFromEmail(String email) {
