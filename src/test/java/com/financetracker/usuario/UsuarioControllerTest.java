@@ -52,6 +52,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 1: Cadastro com e-mail válido e senha forte deve retornar 201")
     void cadastroComEmailValidoESenhaForte() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Valido");
         payload.put("email", "usuario.valido@example.com");
         payload.put("password", "SenhaForte123!");
         payload.put("confirmPassword", "SenhaForte123!");
@@ -66,6 +67,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 2: Cadastro com e-mail inválido deve retornar 400")
     void cadastroComEmailInvalido() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Valido");
         payload.put("email", "email-invalido");
         payload.put("password", "SenhaForte123!");
         payload.put("confirmPassword", "SenhaForte123!");
@@ -80,6 +82,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 3: Cadastro com senha fraca deve retornar 400")
     void cadastroComSenhaFraca() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Valido");
         payload.put("email", "usuario2@example.com");
         payload.put("password", "123");
         payload.put("confirmPassword", "123");
@@ -94,6 +97,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 4: Cadastro com e-mail já existente deve retornar 409")
     void cadastroComEmailExistente() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Novo");
         payload.put("email", "existente@example.com");
         payload.put("password", "SenhaForte123!");
         payload.put("confirmPassword", "SenhaForte123!");
@@ -108,6 +112,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 5: Cadastro com campos vazios deve retornar 400")
     void cadastroComCamposVazios() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "");
         payload.put("email", "");
         payload.put("password", "");
         payload.put("confirmPassword", "");
@@ -122,6 +127,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 6: Cadastro com senha e confirmação diferentes deve retornar 400")
     void cadastroComSenhasDiferentes() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Valido");
         payload.put("email", "usuario3@example.com");
         payload.put("password", "SenhaForte123!");
         payload.put("confirmPassword", "OutraSenha456!");
@@ -136,6 +142,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 7: Cadastro sem confirmação de senha deve retornar 400")
     void cadastroSemConfirmacaoSenha() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Valido");
         payload.put("email", "usuario4@example.com");
         payload.put("password", "SenhaForte123!");
         // confirmPassword ausente
@@ -150,6 +157,7 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 8: Cadastro bem-sucedido deve salvar senha com hash BCrypt")
     void cadastroSalvaSenhaComHash() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Valido Hash");
         payload.put("email", "senha.hash@example.com");
         payload.put("password", "SenhaForte123!");
         payload.put("confirmPassword", "SenhaForte123!");
@@ -223,12 +231,14 @@ public class UsuarioControllerTest {
     @DisplayName("Teste 13: Rate Limiting no Cadastro deve retornar 429 após 5 tentativas de cadastro por IP")
     void rateLimitingCadastroBloqueiaAposExcederLimite() throws Exception {
         Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Limite");
         payload.put("email", "novo.usuario@example.com");
         payload.put("password", "SenhaForte123!");
         payload.put("confirmPassword", "SenhaForte123!");
 
         // Faz 5 tentativas bem-sucedidas de requisições de cadastro (com e-mails diferentes para evitar Conflict 409)
         for (int i = 1; i <= 5; i++) {
+            payload.put("name", "Nome Limite " + i);
             payload.put("email", "usuario.rate" + i + "@example.com");
             mockMvc.perform(post("/usuarios/register")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -237,6 +247,7 @@ public class UsuarioControllerTest {
         }
 
         // A 6ª tentativa deve retornar 429 Too Many Requests (Status status().isTooManyRequests() ou status().value(429))
+        payload.put("name", "Nome Limite 6");
         payload.put("email", "usuario.rate6@example.com");
         mockMvc.perform(post("/usuarios/register")
                         .contentType(MediaType.APPLICATION_JSON)

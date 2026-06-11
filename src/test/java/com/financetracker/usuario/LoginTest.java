@@ -57,6 +57,31 @@ public class LoginTest {
         usuarioService.resetFailedAttempts();
         // Cadastra um usuário padrão para os testes de login
         usuarioRepository.save(new Usuario("Teste TDD", EMAIL_TESTE, passwordEncoder.encode(SENHA_TESTE)));
+
+        // Inactive user
+        Usuario inactiveUser = new Usuario("Inativo", "inativo@example.com", passwordEncoder.encode(SENHA_TESTE));
+        inactiveUser.setAtivo(false);
+        usuarioRepository.save(inactiveUser);
+
+        // Unverified user
+        Usuario unverifiedUser = new Usuario("Não Verificado", "nao-verificado@example.com", passwordEncoder.encode(SENHA_TESTE));
+        unverifiedUser.setVerificado(false);
+        usuarioRepository.save(unverifiedUser);
+
+        // Blocked user
+        Usuario blockedUser = new Usuario("Bloqueado", "bloqueado@example.com", passwordEncoder.encode(SENHA_TESTE));
+        blockedUser.setBloqueado(true);
+        usuarioRepository.save(blockedUser);
+
+        // Expired password user
+        Usuario expiredUser = new Usuario("Senha Expirada", "senha-expirada@example.com", passwordEncoder.encode(SENHA_TESTE));
+        expiredUser.setSenhaExpirada(true);
+        usuarioRepository.save(expiredUser);
+
+        // MFA enabled user
+        Usuario mfaUser = new Usuario("MFA Usuario", "mfa-usuario@example.com", passwordEncoder.encode(SENHA_TESTE));
+        mfaUser.setMfaHabilitado(true);
+        usuarioRepository.save(mfaUser);
     }
 
     @Test
@@ -212,7 +237,7 @@ public class LoginTest {
         mockMvc.perform(post("/usuarios/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isBadRequest());
     }
 
     @Test
