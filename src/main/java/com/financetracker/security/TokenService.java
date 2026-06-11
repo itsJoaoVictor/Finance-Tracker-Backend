@@ -25,6 +25,23 @@ public class TokenService {
             return JWT.create()
                     .withIssuer(ISSUER)
                     .withSubject(email)
+                    .withClaim("user_id", "fallback-id")
+                    .withClaim("role", "USER")
+                    .withExpiresAt(getExpirationDate())
+                    .sign(algorithm);
+        } catch (JWTCreationException exception) {
+            throw new RuntimeException("Error generating token", exception);
+        }
+    }
+
+    public String generateToken(com.financetracker.usuario.entity.Usuario usuario) {
+        try {
+            Algorithm algorithm = Algorithm.HMAC256(secret);
+            return JWT.create()
+                    .withIssuer(ISSUER)
+                    .withSubject(usuario.getEmail())
+                    .withClaim("user_id", usuario.getId().toString())
+                    .withClaim("role", "USER")
                     .withExpiresAt(getExpirationDate())
                     .sign(algorithm);
         } catch (JWTCreationException exception) {

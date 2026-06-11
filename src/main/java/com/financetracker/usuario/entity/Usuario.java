@@ -7,7 +7,9 @@ import java.time.LocalDateTime;
 
 
 @Entity
-@Table(name = "usuarios")
+@Table(name = "usuarios", indexes = {
+    @Index(name = "idx_usuario_email", columnList = "email", unique = true)
+})
 public class Usuario {
 
     @Id
@@ -27,6 +29,21 @@ public class Usuario {
     @Column(name = "criado_em", updatable = false)
     private LocalDateTime criadoEm = LocalDateTime.now();
 
+    @Column(nullable = false)
+    private boolean ativo = true;
+
+    @Column(nullable = false)
+    private boolean verificado = true;
+
+    @Column(nullable = false)
+    private boolean bloqueado = false;
+
+    @Column(name = "senha_expirada", nullable = false)
+    private boolean senhaExpirada = false;
+
+    @Column(name = "mfa_habilitado", nullable = false)
+    private boolean mfaHabilitado = false;
+
     protected Usuario() {
         // JPA
     }
@@ -35,6 +52,46 @@ public class Usuario {
         this.nome = nome;
         this.email = email;
         this.senha = senha;
+    }
+
+    public boolean isAtivo() {
+        return ativo;
+    }
+
+    public void setAtivo(boolean ativo) {
+        this.ativo = ativo;
+    }
+
+    public boolean isVerificado() {
+        return verificado;
+    }
+
+    public void setVerificado(boolean verificado) {
+        this.verificado = verificado;
+    }
+
+    public boolean isBloqueado() {
+        return bloqueado;
+    }
+
+    public void setBloqueado(boolean bloqueado) {
+        this.bloqueado = bloqueado;
+    }
+
+    public boolean isSenhaExpirada() {
+        return senhaExpirada;
+    }
+
+    public void setSenhaExpirada(boolean senhaExpirada) {
+        this.senhaExpirada = senhaExpirada;
+    }
+
+    public boolean isMfaHabilitado() {
+        return mfaHabilitado;
+    }
+
+    public void setMfaHabilitado(boolean mfaHabilitado) {
+        this.mfaHabilitado = mfaHabilitado;
     }
 
 
