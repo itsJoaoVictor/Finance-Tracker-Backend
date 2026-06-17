@@ -29,19 +29,19 @@ public class Usuario {
     @Column(name = "criado_em", updatable = false)
     private LocalDateTime criadoEm = LocalDateTime.now();
 
-    @Column(nullable = false)
+    @Column(nullable = false, columnDefinition = "boolean default true")
     private boolean ativo = true;
 
-    @Column(nullable = false)
+    @Column(nullable = false, columnDefinition = "boolean default true")
     private boolean verificado = true;
 
-    @Column(nullable = false)
+    @Column(nullable = false, columnDefinition = "boolean default false")
     private boolean bloqueado = false;
 
-    @Column(name = "senha_expirada", nullable = false)
+    @Column(name = "senha_expirada", nullable = false, columnDefinition = "boolean default false")
     private boolean senhaExpirada = false;
 
-    @Column(name = "mfa_habilitado", nullable = false)
+    @Column(name = "mfa_habilitado", nullable = false, columnDefinition = "boolean default false")
     private boolean mfaHabilitado = false;
 
     protected Usuario() {
