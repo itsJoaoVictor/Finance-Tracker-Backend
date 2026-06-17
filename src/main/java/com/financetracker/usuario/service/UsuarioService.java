@@ -94,7 +94,9 @@ public class UsuarioService {
 	public void register(UsuarioRegisterRequest request) {
 		validateRequest(request);
 
-		if (usuarioRepository.existsByEmail(request.email())) {
+		String emailNormalizado = request.email().trim().toLowerCase();
+
+		if (usuarioRepository.existsByEmail(emailNormalizado)) {
 			throw new ResponseStatusException(HttpStatus.CONFLICT, "E-mail ja cadastrado");
 		}
 
@@ -104,7 +106,7 @@ public class UsuarioService {
 
 		String nome = request.name();
 		String encodedPassword = passwordEncoder.encode(request.password());
-		Usuario usuario = new Usuario(nome, request.email(), encodedPassword);
+		Usuario usuario = new Usuario(nome, emailNormalizado, encodedPassword);
 		usuarioRepository.save(usuario);
 	}
 
@@ -120,14 +122,6 @@ public class UsuarioService {
 		if (!PasswordUtils.isStrongPassword(request.password())) {
 			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Senha fraca");
 		}
-	}
-
-	private String deriveNomeFromEmail(String email) {
-		int atIndex = email.indexOf('@');
-		if (atIndex <= 0) {
-			return "Usuario";
-		}
-		return email.substring(0, atIndex);
 	}
 
 	/**

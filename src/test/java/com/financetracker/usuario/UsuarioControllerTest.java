@@ -447,4 +447,44 @@ public class UsuarioControllerTest {
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/usuarios/" + usuario.getId()))
                 .andExpect(status().isUnauthorized());
     }
+
+    @Test
+    @DisplayName("Teste 28: Cadastro com e-mail contendo espacos e maiusculas deve normalizar antes de persistir")
+    void cadastroComEmailNormalizado() throws Exception {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Normalizado");
+        payload.put("email", "  EMAIL.normalizado@Example.com  ");
+        payload.put("password", "SenhaForte123!");
+        payload.put("confirmPassword", "SenhaForte123!");
+
+        mockMvc.perform(post("/usuarios/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isCreated());
+
+        // Verifica se persistiu com e-mail em lowercase e sem espacos
+        org.junit.jupiter.api.Assertions.assertTrue(usuarioRepository.existsByEmail("email.normalizado@example.com"));
+        // E verifica se tentar registrar novamente o mesmo e-mail normalizado, mesmo em outro formato, da conflito
+        payload.put("name", "Outro Nome");
+        payload.put("email", "email.normalizado@example.com");
+        mockMvc.perform(post("/usuarios/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("Teste 29: Cadastro com nome ja existente deve retornar 409")
+    void cadastroComNomeExistente() throws Exception {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "existente");
+        payload.put("email", "novo.email@example.com");
+        payload.put("password", "SenhaForte123!");
+        payload.put("confirmPassword", "SenhaForte123!");
+
+        mockMvc.perform(post("/usuarios/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isConflict());
+    }
 }
