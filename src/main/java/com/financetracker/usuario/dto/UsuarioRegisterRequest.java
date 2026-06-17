@@ -5,19 +5,27 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 public record UsuarioRegisterRequest(
-    @NotBlank(message = "Name is required")
-    @Size(min = 3, message = "Name must be at least 3 characters long")
+    @NotBlank(message = "O nome é obrigatório")
+    @Size(min = 3, message = "O nome deve ter pelo menos 3 caracteres")
     String name,
 
-    @NotBlank(message = "Email is required")
-    @Email(message = "Invalid email")
+    @NotBlank(message = "O e-mail é obrigatório")
+    @Email(message = "E-mail inválido")
     String email,
 
-    @NotBlank(message = "Password is required")
-    @Size(min = 8, message = "Password must be at least 8 characters long")
+    @NotBlank(message = "A senha é obrigatória")
+    @Size(min = 8, message = "A senha deve ter pelo menos 8 caracteres")
     String password,
 
-    @NotBlank(message = "Confirm password is required")
+    @NotBlank(message = "A confirmação de senha é obrigatória")
     String confirmPassword
 ) {
+    public UsuarioRegisterRequest {
+        if (email != null) {
+            email = email.trim().toLowerCase();
+        }
+        if (name != null) {
+            name = name.trim();
+        }
+    }
 }
