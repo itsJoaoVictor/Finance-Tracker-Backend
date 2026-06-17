@@ -41,6 +41,9 @@ public class UsuarioControllerTest {
     @Autowired
     private com.financetracker.security.RateLimitingFilter rateLimitingFilter;
 
+    @Autowired
+    private com.financetracker.security.TokenService tokenService;
+
     @BeforeEach
     void setUp() {
         usuarioRepository.deleteAll();
@@ -253,5 +256,195 @@ public class UsuarioControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isTooManyRequests());
+    }
+
+    @Test
+    @DisplayName("Teste 14: Obter perfil proprio (GET /me) sem token deve retornar 401")
+    void obterMeSemToken() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/me"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("Teste 15: Obter perfil proprio (GET /me) com token valido deve retornar 200")
+    void obterMeComToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/me")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.id").value(usuario.getId().toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.email").value(usuario.getEmail()));
+    }
+
+    @Test
+    @DisplayName("Teste 16: Obter detalhes do proprio usuario (GET /{id}) com token valido deve retornar 200")
+    void obterDetalhesUsuarioComToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/" + usuario.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.id").value(usuario.getId().toString()))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.email").value(usuario.getEmail()));
+    }
+
+    @Test
+    @DisplayName("Teste 17: Obter detalhes de usuario inexistente deve retornar 404 ou 403")
+    void obterDetalhesUsuarioInexistente() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+        String uuidInexistente = java.util.UUID.randomUUID().toString();
+
+        // UUID diferente do autenticado deve retornar 403 (IDOR bloqueado)
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/" + uuidInexistente)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Teste 18: Obter detalhes de usuario sem token deve retornar 401")
+    void obterDetalhesUsuarioSemToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/" + usuario.getId()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("Teste 19: Atualizar informacoes do proprio usuario com token valido deve retornar 200")
+    void atualizarUsuarioComToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Novo Nome Atualizado");
+        payload.put("email", "novoemail@example.com");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/usuarios/" + usuario.getId())
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("Teste 20: Atualizar informacoes de usuario com dados invalidos deve retornar 400")
+    void atualizarUsuarioComDadosInvalidos() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "");
+        payload.put("email", "email-invalido");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/usuarios/" + usuario.getId())
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("Teste 21: Atualizar usuario de outro usuario (IDOR) deve retornar 403")
+    void atualizarUsuarioDOutroIDOR() throws Exception {
+        // Cria um segundo usuario
+        Usuario outro = usuarioRepository.save(new Usuario("outro", "outro@example.com", passwordEncoder.encode("SenhaForte123!")));
+
+        // Autentica como 'existente' e tenta alterar 'outro'
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Invasao");
+        payload.put("email", "invasao@example.com");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/usuarios/" + outro.getId())
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Teste 22: Atualizar usuario sem token deve retornar 401")
+    void atualizarUsuarioSemToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Novo Nome");
+        payload.put("email", "novoemail@example.com");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/usuarios/" + usuario.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("Teste 23: Atualizar e-mail para um ja existente deve retornar 409")
+    void atualizarEmailDuplicado() throws Exception {
+        // Cria segundo usuario
+        usuarioRepository.save(new Usuario("segundo", "segundo@example.com", passwordEncoder.encode("SenhaForte123!")));
+
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Existente");
+        payload.put("email", "segundo@example.com"); // e-mail de outro usuario
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/usuarios/" + usuario.getId())
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("Teste 24: Deletar proprio usuario com token valido deve retornar 200 e inativar (soft delete)")
+    void deletarUsuarioComToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/usuarios/" + usuario.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+
+        Usuario usuarioDeletado = usuarioRepository.findById(usuario.getId()).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertFalse(usuarioDeletado.isAtivo());
+    }
+
+    @Test
+    @DisplayName("Teste 25: Deletar usuario de outro usuario (IDOR) deve retornar 403")
+    void deletarUsuarioDOutroIDOR() throws Exception {
+        Usuario outro = usuarioRepository.save(new Usuario("outro2", "outro2@example.com", passwordEncoder.encode("SenhaForte123!")));
+
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/usuarios/" + outro.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Teste 26: Deletar usuario inexistente deve retornar 403 (ID de outro usuario = acesso negado)")
+    void deletarUsuarioInexistente() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+        String uuidInexistente = java.util.UUID.randomUUID().toString();
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/usuarios/" + uuidInexistente)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Teste 27: Deletar usuario sem token deve retornar 401")
+    void deletarUsuarioSemToken() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/usuarios/" + usuario.getId()))
+                .andExpect(status().isUnauthorized());
     }
 }

@@ -4,13 +4,18 @@ import com.financetracker.security.TokenService;
 import com.financetracker.usuario.dto.LoginRequest;
 import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
+import com.financetracker.usuario.dto.UsuarioResponse;
+import com.financetracker.usuario.dto.UsuarioUpdateRequest;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import com.financetracker.usuario.util.PasswordUtils;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+
+import java.util.UUID;
 
 @Service
 public class UsuarioService {
@@ -123,5 +128,83 @@ public class UsuarioService {
 			return "Usuario";
 		}
 		return email.substring(0, atIndex);
+	}
+
+	/**
+	 * Retorna o usuário autenticado a partir do SecurityContext.
+	 * Lança 401 se não houver autenticação válida.
+	 */
+	private Usuario getAuthenticatedUsuario() {
+		var authentication = SecurityContextHolder.getContext().getAuthentication();
+		if (authentication == null || !authentication.isAuthenticated()) {
+			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Nao autenticado");
+		}
+		String email = authentication.getName();
+		return usuarioRepository.findByEmail(email)
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Nao autenticado"));
+	}
+
+	/**
+	 * Retorna os dados do próprio usuário autenticado.
+	 */
+	public UsuarioResponse getMe() {
+		Usuario usuario = getAuthenticatedUsuario();
+		return new UsuarioResponse(usuario);
+	}
+
+	/**
+	 * Retorna os dados de um usuário pelo ID.
+	 * Apenas o próprio usuário pode consultar seus dados.
+	 */
+	public UsuarioResponse getById(UUID id) {
+		Usuario autenticado = getAuthenticatedUsuario();
+		if (!autenticado.getId().equals(id)) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Acesso negado");
+		}
+		if (!autenticado.isAtivo()) {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Usuario inativo");
+		}
+		return new UsuarioResponse(autenticado);
+	}
+
+	/**
+	 * Atualiza nome e e-mail do próprio usuário autenticado.
+	 * Valida ownership, normaliza e-mail e garante unicidade.
+	 */
+	public void update(UUID id, UsuarioUpdateRequest request) {
+		Usuario autenticado = getAuthenticatedUsuario();
+		if (!autenticado.getId().equals(id)) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Acesso negado");
+		}
+		if (!autenticado.isAtivo()) {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Usuario inativo");
+		}
+
+		String emailNormalizado = request.email().trim().toLowerCase();
+
+		// Verifica unicidade apenas se o e-mail for diferente do atual
+		if (!autenticado.getEmail().equals(emailNormalizado) && usuarioRepository.existsByEmail(emailNormalizado)) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT, "E-mail ja cadastrado");
+		}
+
+		autenticado.setNome(request.name());
+		autenticado.setEmail(emailNormalizado);
+		usuarioRepository.save(autenticado);
+	}
+
+	/**
+	 * Desativa (soft delete) a conta do próprio usuário autenticado.
+	 * Valida ownership antes de executar.
+	 */
+	public void softDelete(UUID id) {
+		Usuario autenticado = getAuthenticatedUsuario();
+		if (!autenticado.getId().equals(id)) {
+			throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Acesso negado");
+		}
+		if (!autenticado.isAtivo()) {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Usuario ja deletado");
+		}
+		autenticado.setAtivo(false);
+		usuarioRepository.save(autenticado);
 	}
 }
