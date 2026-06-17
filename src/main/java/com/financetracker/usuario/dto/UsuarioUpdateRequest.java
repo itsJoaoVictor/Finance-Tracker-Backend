@@ -13,4 +13,12 @@ public record UsuarioUpdateRequest(
     @Email(message = "E-mail inválido")
     String email
 ) {
+    public UsuarioUpdateRequest {
+        if (email != null) {
+            email = email.trim().toLowerCase();
+        }
+        if (name != null) {
+            name = name.trim();
+        }
+    }
 }

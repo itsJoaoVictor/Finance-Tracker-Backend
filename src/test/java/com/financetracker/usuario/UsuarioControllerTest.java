@@ -20,6 +20,7 @@ import java.util.Map;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -486,5 +487,44 @@ public class UsuarioControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(payload)))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("Teste 30: Atualizar e-mail com espacos e maiusculas deve normalizar antes de persistir")
+    void atualizarEmailNormalizado() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("name", "Nome Novo");
+        payload.put("email", "  NOVO.email@Example.com  ");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/usuarios/" + usuario.getId())
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk());
+
+        Usuario usuarioAtualizado = usuarioRepository.findById(usuario.getId()).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals("novo.email@example.com", usuarioAtualizado.getEmail());
+    }
+
+    @Test
+    @DisplayName("Teste 31: GET /usuarios/me nao deve expor campos sensiveis")
+    void responseNaoExpoeCamposSensiveis() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/usuarios/me")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").exists())
+                .andExpect(jsonPath("$.name").exists())
+                .andExpect(jsonPath("$.email").exists())
+                .andExpect(jsonPath("$.senha").doesNotExist())
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.ativo").doesNotExist())
+                .andExpect(jsonPath("$.bloqueado").doesNotExist())
+                .andExpect(jsonPath("$.mfaHabilitado").doesNotExist());
     }
 }
