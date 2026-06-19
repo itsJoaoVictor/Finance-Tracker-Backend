@@ -51,8 +51,16 @@ public class LoginTest {
     private static final String EMAIL_TESTE = "teste.tdd@example.com";
     private static final String SENHA_TESTE = "SenhaTdd123!";
 
+    @Autowired
+    private com.financetracker.cartao.repository.CartaoRepository cartaoRepository;
+
+    @Autowired
+    private com.financetracker.conta.repository.ContaRepository contaRepository;
+
     @BeforeEach
     void setUp() {
+        cartaoRepository.deleteAll();
+        contaRepository.deleteAll();
         usuarioRepository.deleteAll();
         usuarioService.resetFailedAttempts();
         // Cadastra um usuário padrão para os testes de login
