@@ -5,6 +5,10 @@ import com.financetracker.conta.exception.LimitaContasException;
 import com.financetracker.cartao.exception.CartaoNaoEncontradoException;
 import com.financetracker.cartao.exception.LimiteCartoesException;
 import com.financetracker.cartao.exception.LimiteDisponivelInvalidoException;
+import com.financetracker.categoria.exception.CategoriaGlobalImutavelException;
+import com.financetracker.categoria.exception.CategoriaNaoEncontradaException;
+import com.financetracker.categoria.exception.LimiteCategoriasException;
+import com.financetracker.categoria.exception.NomeCategoriaDuplicadoException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -58,6 +62,30 @@ public class GlobalExceptionHandler {
         body.put("error", "Dados inválidos");
         body.put("campos", fieldErrors);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    @ExceptionHandler(CategoriaNaoEncontradaException.class)
+    public ResponseEntity<Map<String, String>> handleCategoriaNaoEncontrada(CategoriaNaoEncontradaException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(CategoriaGlobalImutavelException.class)
+    public ResponseEntity<Map<String, String>> handleCategoriaGlobalImutavel(CategoriaGlobalImutavelException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(NomeCategoriaDuplicadoException.class)
+    public ResponseEntity<Map<String, String>> handleNomeCategoriaDuplicado(NomeCategoriaDuplicadoException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(LimiteCategoriasException.class)
+    public ResponseEntity<Map<String, String>> handleLimiteCategorias(LimiteCategoriasException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
     }
 }
 
