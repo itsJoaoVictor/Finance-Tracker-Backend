@@ -2,6 +2,9 @@ package com.financetracker.config;
 
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.exception.LimitaContasException;
+import com.financetracker.cartao.exception.CartaoNaoEncontradoException;
+import com.financetracker.cartao.exception.LimiteCartoesException;
+import com.financetracker.cartao.exception.LimiteDisponivelInvalidoException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -21,8 +24,26 @@ public class GlobalExceptionHandler {
                 .body(Map.of("error", ex.getMessage()));
     }
 
+    @ExceptionHandler(CartaoNaoEncontradoException.class)
+    public ResponseEntity<Map<String, String>> handleCartaoNaoEncontrada(CartaoNaoEncontradoException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
     @ExceptionHandler(LimitaContasException.class)
     public ResponseEntity<Map<String, String>> handleLimitaContas(LimitaContasException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(LimiteCartoesException.class)
+    public ResponseEntity<Map<String, String>> handleLimiteCartoes(LimiteCartoesException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(LimiteDisponivelInvalidoException.class)
+    public ResponseEntity<Map<String, String>> handleLimiteDisponivelInvalido(LimiteDisponivelInvalidoException ex) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(Map.of("error", ex.getMessage()));
     }
@@ -39,3 +60,4 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 }
+
