@@ -45,8 +45,16 @@ public class UsuarioControllerTest {
     @Autowired
     private com.financetracker.security.TokenService tokenService;
 
+    @Autowired
+    private com.financetracker.cartao.repository.CartaoRepository cartaoRepository;
+
+    @Autowired
+    private com.financetracker.conta.repository.ContaRepository contaRepository;
+
     @BeforeEach
     void setUp() {
+        cartaoRepository.deleteAll();
+        contaRepository.deleteAll();
         usuarioRepository.deleteAll();
         usuarioRepository.save(new Usuario("existente", "existente@example.com", passwordEncoder.encode("SenhaForte123!")));
         rateLimitingFilter.resetLimits();
