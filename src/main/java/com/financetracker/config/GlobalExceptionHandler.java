@@ -5,6 +5,7 @@ import com.financetracker.conta.exception.LimitaContasException;
 import com.financetracker.cartao.exception.CartaoNaoEncontradoException;
 import com.financetracker.cartao.exception.LimiteCartoesException;
 import com.financetracker.cartao.exception.LimiteDisponivelInvalidoException;
+import com.financetracker.categoria.exception.*;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -44,6 +45,30 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(LimiteDisponivelInvalidoException.class)
     public ResponseEntity<Map<String, String>> handleLimiteDisponivelInvalido(LimiteDisponivelInvalidoException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(CategoriaNaoEncontradaException.class)
+    public ResponseEntity<Map<String, String>> handleCategoriaNaoEncontrada(CategoriaNaoEncontradaException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(CategoriaGlobalImutavelException.class)
+    public ResponseEntity<Map<String, String>> handleCategoriaGlobalImutavel(CategoriaGlobalImutavelException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(NomeCategoriaDuplicadoException.class)
+    public ResponseEntity<Map<String, String>> handleNomeCategoriaDuplicado(NomeCategoriaDuplicadoException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(LimiteCategoriasException.class)
+    public ResponseEntity<Map<String, String>> handleLimiteCategorias(LimiteCategoriasException ex) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(Map.of("error", ex.getMessage()));
     }
