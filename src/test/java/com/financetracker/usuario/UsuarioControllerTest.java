@@ -535,4 +535,50 @@ public class UsuarioControllerTest {
                 .andExpect(jsonPath("$.bloqueado").doesNotExist())
                 .andExpect(jsonPath("$.mfaHabilitado").doesNotExist());
     }
+
+    @Test
+    @DisplayName("Teste 32: Estender sessão com senha válida deve retornar 200 e novos tokens")
+    void extendSessionComSenhaValida() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("password", "SenhaForte123!");
+
+        mockMvc.perform(post("/usuarios/extend-session")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token").exists())
+                .andExpect(jsonPath("$.access_token").exists());
+    }
+
+    @Test
+    @DisplayName("Teste 33: Estender sessão com senha inválida deve retornar 401")
+    void extendSessionComSenhaInvalida() throws Exception {
+        Usuario usuario = usuarioRepository.findByEmail("existente@example.com").orElseThrow();
+        String token = tokenService.generateToken(usuario);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("password", "SenhaIncorreta!");
+
+        mockMvc.perform(post("/usuarios/extend-session")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("Teste 34: Estender sessão sem token deve retornar 401")
+    void extendSessionSemToken() throws Exception {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("password", "SenhaForte123!");
+
+        mockMvc.perform(post("/usuarios/extend-session")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isUnauthorized());
+    }
 }

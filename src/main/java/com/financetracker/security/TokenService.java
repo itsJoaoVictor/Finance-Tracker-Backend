@@ -63,6 +63,6 @@ public class TokenService {
     }
 
     private Instant getExpirationDate() {
-        return Instant.now().plus(java.time.Duration.ofMinutes(15));
+        return Instant.now().plus(java.time.Duration.ofHours(2));
     }
 }

@@ -1,6 +1,7 @@
 package com.financetracker.usuario.service;
 
 import com.financetracker.security.TokenService;
+import com.financetracker.usuario.dto.ExtendSessionRequest;
 import com.financetracker.usuario.dto.LoginRequest;
 import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
@@ -184,6 +185,30 @@ public class UsuarioService {
 		autenticado.setNome(request.name());
 		autenticado.setEmail(emailNormalizado);
 		usuarioRepository.save(autenticado);
+	}
+
+	/**
+	 * Valida a senha do usuário autenticado para retornar um novo token estendido.
+	 */
+	public LoginResponse extendSession(ExtendSessionRequest request) {
+		Usuario autenticado = getAuthenticatedUsuario();
+		String emailNormalized = autenticado.getEmail().trim().toLowerCase();
+
+		if (failedAttempts.getOrDefault(emailNormalized, 0) >= 5) {
+			throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Muitas tentativas de login");
+		}
+
+		if (!passwordEncoder.matches(request.password(), autenticado.getSenha())) {
+			failedAttempts.put(emailNormalized, failedAttempts.getOrDefault(emailNormalized, 0) + 1);
+			throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Senha incorreta");
+		}
+
+		failedAttempts.remove(emailNormalized);
+
+		String token = tokenService.generateToken(autenticado);
+		String accessToken = token;
+		String refreshToken = java.util.UUID.randomUUID().toString();
+		return new LoginResponse(token, accessToken, refreshToken, null);
 	}
 
 	/**

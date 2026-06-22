@@ -38,6 +38,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 Optional<Usuario> usuarioOpt = usuarioRepository.findByEmail(email);
                 if (usuarioOpt.isPresent()) {
                     Usuario usuario = usuarioOpt.get();
+                    if (!usuario.isAtivo() || usuario.isBloqueado()) {
+                        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                        response.setContentType("application/json;charset=UTF-8");
+                        response.getWriter().write("{\"error\": \"Conta inativa ou bloqueada\"}");
+                        return;
+                    }
                     UserDetails userDetails = User.withUsername(usuario.getEmail())
                             .password(usuario.getSenha())
                             .authorities(Collections.emptyList())

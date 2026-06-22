@@ -1,5 +1,6 @@
 package com.financetracker.usuario.controller;
 
+import com.financetracker.usuario.dto.ExtendSessionRequest;
 import com.financetracker.usuario.dto.LoginRequest;
 import com.financetracker.usuario.dto.LoginResponse;
 import com.financetracker.usuario.dto.UsuarioRegisterRequest;
@@ -36,6 +37,12 @@ public class UsuarioController {
 		if (Boolean.TRUE.equals(response.twoFactorRequired())) {
 			return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
 		}
+		return ResponseEntity.ok(response);
+	}
+
+	@PostMapping("/extend-session")
+	public ResponseEntity<LoginResponse> extendSession(@Valid @RequestBody ExtendSessionRequest request) {
+		LoginResponse response = usuarioService.extendSession(request);
 		return ResponseEntity.ok(response);
 	}
 
