@@ -2,6 +2,8 @@ package com.financetracker.transacao.repository;
 
 import com.financetracker.transacao.entity.Transacao;
 import com.financetracker.transacao.enums.TipoTransacao;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -15,6 +17,21 @@ import java.util.UUID;
 
 @Repository
 public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
+
+    @Query("SELECT t FROM Transacao t WHERE t.usuario.id = :usuarioId AND t.ativo = true " +
+           "AND t.tipo IN (:tipos) " +
+           "AND (LOWER(t.descricao) LIKE LOWER(:descricaoPattern)) " +
+           "AND t.data >= :dataInicio " +
+           "AND t.data <= :dataFim " +
+           "ORDER BY t.data DESC, t.criadoEm DESC")
+    Page<Transacao> findFiltered(
+        @Param("usuarioId") UUID usuarioId,
+        @Param("tipos") List<TipoTransacao> tipos,
+        @Param("descricaoPattern") String descricaoPattern,
+        @Param("dataInicio") LocalDate dataInicio,
+        @Param("dataFim") LocalDate dataFim,
+        Pageable pageable
+    );
 
     List<Transacao> findByUsuarioIdAndAtivoTrueOrderByDataDesc(UUID usuarioId);
 

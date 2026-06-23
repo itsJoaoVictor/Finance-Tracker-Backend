@@ -189,4 +189,155 @@ public class TransacaoControllerTest {
         assertEquals(0, BigDecimal.valueOf(300.00).compareTo(cartaoPosTransacao.getLimiteDisponivel()), 
                 "O limite disponível do cartão deve ser de 300.00 devido à liberação das 3 parcelas históricas.");
     }
+
+    @Test
+    @DisplayName("POST /api/transacoes — Criar DEPOSITO sem categoria deve ter sucesso")
+    void criarDepositoSemCategoriaSucesso() throws Exception {
+        TransacaoCriacaoRequest request = new TransacaoCriacaoRequest(
+                "Depósito de teste",
+                BigDecimal.valueOf(500.00),
+                "DEPOSITO",
+                null,
+                contaValida.getId(),
+                null,
+                null,
+                LocalDate.now(),
+                1,
+                null,
+                null,
+                null
+        );
+
+        mockMvc.perform(post("/api/transacoes")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    @DisplayName("POST /api/transacoes — Criar SAQUE sem categoria deve ter sucesso")
+    void criarSaqueSemCategoriaSucesso() throws Exception {
+        TransacaoCriacaoRequest request = new TransacaoCriacaoRequest(
+                "Saque de teste",
+                BigDecimal.valueOf(200.00),
+                "SAQUE",
+                contaValida.getId(),
+                null,
+                null,
+                null,
+                LocalDate.now(),
+                1,
+                null,
+                null,
+                null
+        );
+
+        mockMvc.perform(post("/api/transacoes")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    @DisplayName("POST /api/transacoes — Criar PIX sem categoria deve ter sucesso")
+    void criarPixSemCategoriaSucesso() throws Exception {
+        TransacaoCriacaoRequest request = new TransacaoCriacaoRequest(
+                "Pix de teste",
+                BigDecimal.valueOf(150.00),
+                "PIX",
+                contaValida.getId(),
+                null,
+                null,
+                null,
+                LocalDate.now(),
+                1,
+                null,
+                null,
+                null
+        );
+
+        mockMvc.perform(post("/api/transacoes")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    @DisplayName("POST /api/transacoes/transferir — Transferência entre contas sem categoria deve ter sucesso")
+    void transferirSemCategoriaSucesso() throws Exception {
+        Conta c2 = new Conta();
+        c2.setUsuario(usuarioLogado);
+        c2.setNome("Banco do Brasil");
+        c2.setTipo(TipoConta.POUPANCA);
+        c2.setSaldo(BigDecimal.valueOf(100.00));
+        c2.setAtivo(true);
+        Conta contaDestino = contaRepository.save(c2);
+
+        com.financetracker.transacao.dto.TransferenciaRequest request = new com.financetracker.transacao.dto.TransferenciaRequest(
+                contaValida.getId(),
+                contaDestino.getId(),
+                BigDecimal.valueOf(50.00),
+                "Transferência de teste",
+                null
+        );
+
+        mockMvc.perform(post("/api/transacoes/transferir")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("POST /api/transacoes — Criar DEPOSITO sem descrição deve ter sucesso")
+    void criarDepositoSemDescricaoSucesso() throws Exception {
+        TransacaoCriacaoRequest request = new TransacaoCriacaoRequest(
+                null,
+                BigDecimal.valueOf(500.00),
+                "DEPOSITO",
+                null,
+                contaValida.getId(),
+                null,
+                null,
+                LocalDate.now(),
+                1,
+                null,
+                null,
+                null
+        );
+
+        mockMvc.perform(post("/api/transacoes")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    @DisplayName("POST /api/transacoes — Criar COMPRA_CREDITO sem descrição deve falhar")
+    void criarCompraCreditoSemDescricaoFalha() throws Exception {
+        TransacaoCriacaoRequest request = new TransacaoCriacaoRequest(
+                "",
+                BigDecimal.valueOf(100.00),
+                "COMPRA_CREDITO",
+                null,
+                null,
+                cartaoValido.getId(),
+                categoriaValida.getId(),
+                LocalDate.now(),
+                1,
+                null,
+                null,
+                null
+        );
+
+        mockMvc.perform(post("/api/transacoes")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
+    }
 }

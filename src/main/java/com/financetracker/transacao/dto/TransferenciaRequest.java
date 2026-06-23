@@ -9,5 +9,5 @@ public record TransferenciaRequest(
     @NotNull UUID contaDestinoId,
     @NotNull @jakarta.validation.constraints.DecimalMin("0.01") BigDecimal valor,
     String descricao,
-    @NotNull UUID categoriaId
+    UUID categoriaId
 ) {}

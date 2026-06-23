@@ -20,6 +20,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
@@ -202,8 +204,27 @@ public class TransacaoService {
         Usuario usuario = getAuthenticatedUsuario();
         TipoTransacao tipo = TipoTransacao.valueOf(request.tipo());
 
+        if (tipo == TipoTransacao.COMPRA_CREDITO && (request.descricao() == null || request.descricao().isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Descrição é obrigatória.");
+        }
+
+        String descricao = request.descricao();
+        if (descricao == null || descricao.isBlank()) {
+            descricao = switch (tipo) {
+                case DEPOSITO -> "Depósito";
+                case SAQUE -> "Saque";
+                case PIX -> "Pix";
+                default -> tipo.name();
+            };
+        }
+
         // RN-01 — Anti-IDOR: validar posse de todos os recursos
-        Categoria categoria = findCategoriaDoUsuario(request.categoriaId(), usuario.getId());
+        Categoria categoria = null;
+        if (request.categoriaId() != null) {
+            categoria = findCategoriaDoUsuario(request.categoriaId(), usuario.getId());
+        } else if (tipo != TipoTransacao.DEPOSITO && tipo != TipoTransacao.SAQUE && tipo != TipoTransacao.PIX) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Categoria é obrigatória.");
+        }
         validarTags(request.tagIds(), usuario.getId());
 
         Conta contaOrigem = null;
@@ -292,7 +313,7 @@ public class TransacaoService {
 
                     Transacao t = new Transacao();
                     t.setUsuario(usuario);
-                    t.setDescricao(request.descricao());
+                    t.setDescricao(descricao);
                     t.setValor(valorAtual);
                     t.setTipo(TipoTransacao.COMPRA_CREDITO);
                     t.setContaOrigem(contaOrigem);
@@ -329,7 +350,7 @@ public class TransacaoService {
         // Criação da transação para DEPOSITO, SAQUE, PIX
         Transacao transacao = new Transacao();
         transacao.setUsuario(usuario);
-        transacao.setDescricao(request.descricao());
+        transacao.setDescricao(descricao);
         transacao.setValor(request.valor());
         transacao.setTipo(tipo);
         transacao.setContaOrigem(contaOrigem);
@@ -354,7 +375,7 @@ public class TransacaoService {
 
         // RN-13 — Alerta de Orçamento
         TransacaoResponse.AlertaOrcamento alerta = calcularAlertaOrcamento(
-                usuario.getId(), categoria.getId(), request.valor(), tipo);
+                usuario.getId(), categoria != null ? categoria.getId() : null, request.valor(), tipo);
 
         return alerta != null ? response.withAlerta(alerta) : response;
     }
@@ -380,7 +401,10 @@ public class TransacaoService {
         contaRepository.save(origem);
         contaRepository.save(destino);
 
-        Categoria categoria = findCategoriaDoUsuario(request.categoriaId(), usuario.getId());
+        Categoria categoria = null;
+        if (request.categoriaId() != null) {
+            categoria = findCategoriaDoUsuario(request.categoriaId(), usuario.getId());
+        }
 
         Transacao transacao = new Transacao();
         transacao.setUsuario(usuario);
@@ -643,6 +667,18 @@ public class TransacaoService {
         Usuario usuario = getAuthenticatedUsuario();
         return transacaoRepository.findByUsuarioIdAndAtivoTrueOrderByDataDesc(usuario.getId())
                 .stream().map(TransacaoResponse::new).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public Page<TransacaoResponse> listarPaginado(
+            TipoTransacao tipo, String descricao, LocalDate dataInicio, LocalDate dataFim, Pageable pageable) {
+        Usuario usuario = getAuthenticatedUsuario();
+        List<TipoTransacao> tipos = (tipo != null) ? List.of(tipo) : Arrays.asList(TipoTransacao.values());
+        String descPattern = (descricao != null && !descricao.isBlank()) ? "%" + descricao.trim() + "%" : "%";
+        LocalDate inicio = (dataInicio != null) ? dataInicio : LocalDate.of(1970, 1, 1);
+        LocalDate fim = (dataFim != null) ? dataFim : LocalDate.of(2100, 12, 31);
+        return transacaoRepository.findFiltered(usuario.getId(), tipos, descPattern, inicio, fim, pageable)
+                .map(TransacaoResponse::new);
     }
 
     // ── Soft Delete (DELETE /api/transacoes/{id}) ───────────────

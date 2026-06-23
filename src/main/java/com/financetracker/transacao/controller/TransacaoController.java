@@ -8,6 +8,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import com.financetracker.transacao.enums.TipoTransacao;
 import java.util.List;
 import java.util.UUID;
 
@@ -46,8 +50,20 @@ public class TransacaoController {
     }
 
     @GetMapping
-    public ResponseEntity<List<TransacaoResponse>> listar() {
-        return ResponseEntity.ok(transacaoService.listar());
+    public ResponseEntity<Page<TransacaoResponse>> listar(
+            @RequestParam(required = false) String tipo,
+            @RequestParam(required = false) String descricao,
+            @RequestParam(required = false) String dataInicio,
+            @RequestParam(required = false) String dataFim,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+
+        TipoTransacao tipoEnum = (tipo != null && !tipo.equals("ALL") && !tipo.isBlank()) ? TipoTransacao.valueOf(tipo) : null;
+        java.time.LocalDate inicio = (dataInicio != null && !dataInicio.isBlank()) ? java.time.LocalDate.parse(dataInicio) : null;
+        java.time.LocalDate fim = (dataFim != null && !dataFim.isBlank()) ? java.time.LocalDate.parse(dataFim) : null;
+
+        Pageable pageable = PageRequest.of(page, size);
+        return ResponseEntity.ok(transacaoService.listarPaginado(tipoEnum, descricao, inicio, fim, pageable));
     }
 
     @GetMapping("/sugestao")

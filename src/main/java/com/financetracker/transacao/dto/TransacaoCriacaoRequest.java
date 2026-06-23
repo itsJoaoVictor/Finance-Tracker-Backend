@@ -7,13 +7,13 @@ import java.util.List;
 import java.util.UUID;
 
 public record TransacaoCriacaoRequest(
-    @NotBlank @Size(max = 150) String descricao,
+    @Size(max = 150) String descricao,
     @NotNull @DecimalMin("0.01") BigDecimal valor,
     @NotNull String tipo,
     UUID contaOrigemId,
     UUID contaDestinoId,
     UUID cartaoId,
-    @NotNull UUID categoriaId,
+    UUID categoriaId,
     @NotNull LocalDate data,
     @Min(1) @Max(96) Integer totalParcelas,
     List<UUID> tagIds,
