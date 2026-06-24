@@ -44,7 +44,7 @@ public class Usuario {
     @Column(name = "mfa_habilitado", nullable = false, columnDefinition = "boolean default false")
     private boolean mfaHabilitado = false;
 
-    protected Usuario() {
+    public Usuario() {
         // JPA
     }
 

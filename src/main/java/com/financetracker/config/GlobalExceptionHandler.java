@@ -8,6 +8,9 @@ import com.financetracker.cartao.exception.LimiteDisponivelInvalidoException;
 import com.financetracker.categoria.exception.*;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.exception.LimitaContasException;
+import com.financetracker.dashboard.exception.DashboardLoadException;
+import com.financetracker.relatorio.exception.ExportLimitExceededException;
+import com.financetracker.relatorio.exception.InvalidPeriodException;
 import com.financetracker.transacao.exception.*;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -133,6 +136,24 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(LimiteCategoriasException.class)
     public ResponseEntity<Map<String, String>> handleLimiteCategorias(LimiteCategoriasException ex) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(DashboardLoadException.class)
+    public ResponseEntity<Map<String, String>> handleDashboardLoad(DashboardLoadException ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidPeriodException.class)
+    public ResponseEntity<Map<String, String>> handleInvalidPeriod(InvalidPeriodException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(ExportLimitExceededException.class)
+    public ResponseEntity<Map<String, String>> handleExportLimit(ExportLimitExceededException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(Map.of("error", ex.getMessage()));
     }
 

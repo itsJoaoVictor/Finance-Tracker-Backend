@@ -1,6 +1,8 @@
 package com.financetracker.ia.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.financetracker.assinatura.entity.Assinatura;
+import com.financetracker.assinatura.repository.AssinaturaRepository;
 import com.financetracker.cartao.entity.Cartao;
 import com.financetracker.cartao.repository.CartaoRepository;
 import com.financetracker.categoria.entity.Categoria;
@@ -9,7 +11,11 @@ import com.financetracker.ia.domain.*;
 import com.financetracker.ia.repository.IaCorrecaoUsuarioRepository;
 import com.financetracker.ia.repository.IaDicionarioCategoriaRepository;
 import com.financetracker.ia.repository.IaInsightRepository;
+import com.financetracker.transacao.entity.Fatura;
 import com.financetracker.transacao.entity.Transacao;
+import com.financetracker.transacao.enums.StatusFatura;
+import com.financetracker.transacao.enums.TipoTransacao;
+import com.financetracker.transacao.repository.FaturaRepository;
 import com.financetracker.transacao.repository.TransacaoRepository;
 import com.financetracker.usuario.entity.Usuario;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +27,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -35,6 +42,8 @@ public class IaService {
     private final TransacaoRepository transacaoRepository;
     private final CartaoRepository cartaoRepository;
     private final CategoriaRepository categoriaRepository;
+    private final AssinaturaRepository assinaturaRepository;
+    private final FaturaRepository faturaRepository;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
 
@@ -52,12 +61,19 @@ public class IaService {
     private static final Pattern CPF_PATTERN = Pattern.compile("\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}");
     private static final Pattern CARD_PATTERN = Pattern.compile("\\b\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b");
 
+    // Status de faturas que representam meses realmente gastos (para cálculo de média histórica)
+    private static final Set<StatusFatura> STATUS_FECHADOS = Set.of(
+            StatusFatura.FECHADA, StatusFatura.PAGA, StatusFatura.PAGA_PARCIAL, StatusFatura.ATRASADA
+    );
+
     public IaService(IaInsightRepository iaInsightRepository,
                      IaDicionarioCategoriaRepository iaDicionarioCategoriaRepository,
                      IaCorrecaoUsuarioRepository iaCorrecaoUsuarioRepository,
                      TransacaoRepository transacaoRepository,
                      CartaoRepository cartaoRepository,
                      CategoriaRepository categoriaRepository,
+                     AssinaturaRepository assinaturaRepository,
+                     FaturaRepository faturaRepository,
                      ObjectMapper objectMapper) {
         this.iaInsightRepository = iaInsightRepository;
         this.iaDicionarioCategoriaRepository = iaDicionarioCategoriaRepository;
@@ -65,9 +81,15 @@ public class IaService {
         this.transacaoRepository = transacaoRepository;
         this.cartaoRepository = cartaoRepository;
         this.categoriaRepository = categoriaRepository;
+        this.assinaturaRepository = assinaturaRepository;
+        this.faturaRepository = faturaRepository;
         this.objectMapper = objectMapper;
         this.restTemplate = new RestTemplate();
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RN-07 / RN-12 / RN-13 / RN-14 — CATEGORIZAÇÃO PLN
+    // ═══════════════════════════════════════════════════════════════════
 
     /**
      * RN-12 & RN-13 & RN-14: Classificação de Categorias por Contexto com Cache, LGPD e Feedback Loop
@@ -221,30 +243,50 @@ public class IaService {
         iaCorrecaoUsuarioRepository.save(correcao);
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // RN-02 — DETECÇÃO DE COBRANÇA DUPLICADA
+    // ═══════════════════════════════════════════════════════════════════
+
     /**
-     * RN-02: Detecção de Cobrança Duplicada (tempo real)
+     * RN-02: Detecção de Cobrança Duplicada (tempo real, disparado na criação de transação).
+     *
+     * Apenas verifica compras primárias (parcela 1 ou sem parcelamento).
+     * Parcelas 2-N são lançamentos retroativos programados, não cobranças novas.
      */
     public void analisarNovaTransacao(Transacao transacao) {
         if (transacao.getCartao() == null) return;
+
+        // RN-02: Parcelas N>1 nunca são cobranças duplicadas — são lançamentos retroativos agendados
+        if (transacao.getNumeroParcela() != null && transacao.getNumeroParcela() > 1) return;
 
         LocalDate dataBusca = transacao.getData();
         List<Transacao> doDia = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
                 transacao.getUsuario().getId(), dataBusca, dataBusca);
 
         for (Transacao t : doDia) {
-            if (!t.getId().equals(transacao.getId()) &&
-                    t.getCartao() != null && t.getCartao().getId().equals(transacao.getCartao().getId()) &&
-                    t.getValor().compareTo(transacao.getValor()) == 0 &&
-                    t.getDescricao().equalsIgnoreCase(transacao.getDescricao()) &&
-                    ChronoUnit.MINUTES.between(t.getCriadoEm(), transacao.getCriadoEm()) <= 10) {
+            // Ignorar a própria transação e qualquer parcela N>1 (spec: "ignorar parcelas retroativas")
+            if (t.getId().equals(transacao.getId())) continue;
+            if (t.getNumeroParcela() != null && t.getNumeroParcela() > 1) continue;
+
+            boolean mesmoCartao = t.getCartao() != null && t.getCartao().getId().equals(transacao.getCartao().getId());
+            boolean mesmoValor = t.getValor().compareTo(transacao.getValor()) == 0;
+            boolean mesmaDescricao = t.getDescricao().equalsIgnoreCase(transacao.getDescricao());
+
+            // Verificar intervalo de tempo <= 10 minutos (spec: "dentro de 10 minutos")
+            LocalDateTime criadoEm1 = t.getCriadoEm() != null ? t.getCriadoEm() : LocalDateTime.now();
+            LocalDateTime criadoEm2 = transacao.getCriadoEm() != null ? transacao.getCriadoEm() : LocalDateTime.now();
+            boolean intervaloOk = Math.abs(ChronoUnit.MINUTES.between(criadoEm1, criadoEm2)) <= 10;
+
+            if (mesmoCartao && mesmoValor && mesmaDescricao && intervaloOk) {
 
                 String checkMetadados = "{\"transacoesEnvolvidas\":[\"" + t.getId() + "\",\"" + transacao.getId() + "\"],\"valor\":" + transacao.getValor() + "}";
                 String altMetadados = "{\"transacoesEnvolvidas\":[\"" + transacao.getId() + "\",\"" + t.getId() + "\"],\"valor\":" + transacao.getValor() + "}";
 
                 // Evitar Unicidade: impede gerar o mesmo alerta não lido repetidas vezes
-                boolean jaExiste = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(transacao.getUsuario().getId())
-                        .stream().anyMatch(ins -> ins.getTipo() == TipoInsight.COBRANCA_DUPLICADA &&
-                                (checkMetadados.equals(ins.getMetadados()) || altMetadados.equals(ins.getMetadados())));
+                List<IaInsight> existentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(transacao.getUsuario().getId());
+                boolean jaExiste = existentes.stream().anyMatch(ins ->
+                        ins.getTipo() == TipoInsight.COBRANCA_DUPLICADA &&
+                        (checkMetadados.equals(ins.getMetadados()) || altMetadados.equals(ins.getMetadados())));
 
                 if (!jaExiste) {
                     IaInsight insight = new IaInsight(
@@ -262,8 +304,12 @@ public class IaService {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // PROCESSAMENTO EM LOTE (agendado pelo IaInsightScheduler)
+    // ═══════════════════════════════════════════════════════════════════
+
     /**
-     * Processa em lote as regras de negócio complexas de IA para todos os usuários ativos (RN-01, RN-09, RN-11)
+     * Processa em lote as regras de negócio complexas de IA para todos os usuários ativos.
      */
     public void processarInsightsParaTodos() {
         List<Usuario> usuarios = transacaoRepository.findAll().stream()
@@ -276,150 +322,172 @@ public class IaService {
         }
     }
 
+    /**
+     * Executa RN-01, RN-09, RN-11 para o usuário.
+     */
     public void processarInsightsParaUsuario(Usuario usuario) {
+        limparInsightsOrfaos(usuario.getId());
+        processarInsightsCartaoParaUsuario(usuario);
+        processarInsightsAssinaturaParaUsuario(usuario);
+        processarTrialHunter(usuario);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RN-01 / RN-04 / RN-11 — ANÁLISE DE CARTÕES
+    // ═══════════════════════════════════════════════════════════════════
+
+    public void processarInsightsCartaoParaUsuario(Usuario usuario) {
         UUID usuarioId = usuario.getId();
         LocalDate hoje = LocalDate.now();
-
-        // Limpeza de Insights Órfãos (Cobrança Duplicada cujas transações associadas foram deletadas)
         List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
-        for (IaInsight ins : insightsExistentes) {
-            if (ins.getTipo() == TipoInsight.COBRANCA_DUPLICADA && ins.getMetadados() != null) {
-                try {
-                    Map<?, ?> meta = objectMapper.readValue(ins.getMetadados(), Map.class);
-                    List<?> ids = (List<?>) meta.get("transacoesEnvolvidas");
-                    if (ids != null) {
-                        boolean algumaAtiva = false;
-                        for (Object idStr : ids) {
-                            Optional<Transacao> tOpt = transacaoRepository.findByIdAndUsuarioIdAndAtivoTrue(
-                                    UUID.fromString((String) idStr), usuarioId);
-                            if (tOpt.isPresent()) {
-                                algumaAtiva = true;
-                            }
-                        }
-                        // Se todas as transações daquela duplicidade foram apagadas/inativadas, deletar o insight
-                        if (!algumaAtiva) {
-                            iaInsightRepository.delete(ins);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }
-        }
 
-        // ─── RN-01: PREVISÃO DE FECHAMENTO (BURN RATE) ───
+        // Limpar alertas de duplicata cujas transações foram excluídas
+        limparInsightsOrfaos(usuarioId);
+
         List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
-        for (Cartao cartao : cartoes) {
-            LocalDate inicioMes = hoje.withDayOfMonth(1);
-            List<Transacao> transacoesMes = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
-                    usuarioId, inicioMes, hoje);
+        LocalDate inicioMes = hoje.withDayOfMonth(1);
 
-            BigDecimal totalGastos = transacoesMes.stream()
-                    .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                    .map(Transacao::getValor)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+        for (Cartao cartao : cartoes) {
+
+            // ─── RN-01: PREVISÃO DE FECHAMENTO (BURN RATE) ─────────────────────────────────
+            //
+            // Regras:
+            // 1. Só conta COMPRA_CREDITO com numeroParcela == null OU numeroParcela == 1 (compras novas)
+            // 2. Só dispara a partir do dia 10 do mês (dados suficientes para projeção)
+            // 3. Média histórica calculada sobre faturas FECHADAS/PAGAS dos últimos 6 meses
+            // 4. Alerta somente se projeção > média + 15%
 
             long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
-            if (diasPassados >= 3 && totalGastos.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal mediaDiaria = totalGastos.divide(BigDecimal.valueOf(diasPassados), 2, RoundingMode.HALF_UP);
-                int diasNoMes = hoje.lengthOfMonth();
-                BigDecimal fechamentoProjetado = mediaDiaria.multiply(BigDecimal.valueOf(diasNoMes));
 
-                // Buscar transações dos últimos 6 meses para estabelecer a média histórica dinâmica do cartão
-                LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
-                List<Transacao> transacoesHistoricas = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
-                        usuarioId, seisMesesAtras, inicioMes.minusDays(1));
-
-                BigDecimal totalHistorico = transacoesHistoricas.stream()
+            if (diasPassados >= 10) {
+                // Buscar apenas compras primárias do mês atual para este cartão
+                List<Transacao> transacoesMes = transacaoRepository
+                        .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
+                        .stream()
                         .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
+                        .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
+                        .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
+                        .collect(Collectors.toList());
+
+                BigDecimal totalGastosMes = transacoesMes.stream()
                         .map(Transacao::getValor)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-                // Calcular média mensal histórica real do cartão
-                BigDecimal mediaMensalHistorica = BigDecimal.valueOf(300.00); // Fallback padrão mínimo
-                long totalDiasHistorico = ChronoUnit.DAYS.between(seisMesesAtras, inicioMes.minusDays(1)) + 1;
-                if (totalDiasHistorico > 30 && totalHistorico.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal mediaDiariaHistorica = totalHistorico.divide(BigDecimal.valueOf(totalDiasHistorico), 2, RoundingMode.HALF_UP);
-                    mediaMensalHistorica = mediaDiariaHistorica.multiply(BigDecimal.valueOf(30));
-                }
+                if (totalGastosMes.compareTo(BigDecimal.ZERO) > 0) {
+                    // Projetar fechamento com base na taxa diária atual
+                    BigDecimal mediaDiaria = totalGastosMes.divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP);
+                    int diasNoMes = hoje.lengthOfMonth();
+                    BigDecimal fechamentoProjetado = mediaDiaria.multiply(BigDecimal.valueOf(diasNoMes)).setScale(2, RoundingMode.HALF_UP);
 
-                // Dispara o alerta se a projeção da fatura atual for pelo menos 15% superior à média dinâmica de 6 meses
-                BigDecimal margemAlerta = mediaMensalHistorica.multiply(BigDecimal.valueOf(1.15));
-                if (fechamentoProjetado.compareTo(margemAlerta) > 0) {
-                    boolean jaExiste = insightsExistentes.stream()
-                            .anyMatch(ins -> ins.getTipo() == TipoInsight.CARTAO_PREVISAO &&
-                                    ins.getMetadados() != null && ins.getMetadados().contains(cartao.getId().toString()));
+                    // Calcular média histórica usando FATURAS FECHADAS dos últimos 6 meses
+                    LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
+                    List<Fatura> faturasFechadas = faturaRepository
+                            .findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuarioId)
+                            .stream()
+                            .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
+                            .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
+                            .filter(f -> f.getMesReferencia().isBefore(inicioMes))
+                            .collect(Collectors.toList());
 
-                    if (!jaExiste) {
-                        IaInsight insight = new IaInsight(
-                                usuario,
-                                TipoInsight.CARTAO_PREVISAO,
-                                "Previsão de Fatura Acima do Histórico",
-                                "Neste ritmo, a fatura do seu cartão " + cartao.getNome() + " fechará projetada em R$ " + fechamentoProjetado +
-                                        ", o que é superior à sua média mensal dos últimos 6 meses (R$ " + mediaMensalHistorica.setScale(2, RoundingMode.HALF_UP) + "). Pise no freio.",
-                                "{\"cartaoId\":\"" + cartao.getId() + "\",\"projetado\":" + fechamentoProjetado + ",\"mediaHistorica\":" + mediaMensalHistorica + "}"
-                        );
-                        iaInsightRepository.save(insight);
+                    BigDecimal mediaMensalHistorica;
+                    if (!faturasFechadas.isEmpty()) {
+                        BigDecimal totalHistorico = faturasFechadas.stream()
+                                .map(Fatura::getValorTotal)
+                                .reduce(BigDecimal.ZERO, BigDecimal::add);
+                        mediaMensalHistorica = totalHistorico
+                                .divide(BigDecimal.valueOf(faturasFechadas.size()), 2, RoundingMode.HALF_UP);
+                    } else {
+                        // Fallback: sem histórico suficiente, usa o valor projetado como base
+                        mediaMensalHistorica = BigDecimal.valueOf(300.00);
+                    }
+
+                    // Dispara o alerta se a projeção for pelo menos 15% acima da média histórica
+                    BigDecimal limiarAlerta = mediaMensalHistorica.multiply(BigDecimal.valueOf(1.15)).setScale(2, RoundingMode.HALF_UP);
+
+                    if (fechamentoProjetado.compareTo(limiarAlerta) > 0) {
+                        boolean jaExiste = insightsExistentes.stream()
+                                .anyMatch(ins -> ins.getTipo() == TipoInsight.CARTAO_PREVISAO
+                                        && ins.getMetadados() != null
+                                        && ins.getMetadados().contains(cartao.getId().toString()));
+
+                        if (!jaExiste) {
+                            String mensagem = String.format(
+                                    "Neste ritmo, a fatura do %s fechará em R$ %.2f — %.0f%% acima da sua média dos últimos %d meses (R$ %.2f). Pise no freio.",
+                                    cartao.getNome(),
+                                    fechamentoProjetado,
+                                    ((fechamentoProjetado.subtract(mediaMensalHistorica))
+                                            .divide(mediaMensalHistorica, 4, RoundingMode.HALF_UP)
+                                            .multiply(BigDecimal.valueOf(100))).doubleValue(),
+                                    faturasFechadas.size(),
+                                    mediaMensalHistorica
+                            );
+                            IaInsight insight = new IaInsight(
+                                    usuario,
+                                    TipoInsight.CARTAO_PREVISAO,
+                                    "Previsão de Fatura Acima do Histórico",
+                                    mensagem,
+                                    "{\"cartaoId\":\"" + cartao.getId() + "\",\"projetado\":" + fechamentoProjetado + ",\"mediaHistorica\":" + mediaMensalHistorica + ",\"mesesHistorico\":" + faturasFechadas.size() + "}"
+                            );
+                            iaInsightRepository.save(insight);
+                        }
                     }
                 }
             }
-        }
 
-        // ─── RN-11: ALERTA DE ESTOURO DE FATURA ───
-        for (Cartao cartao : cartoes) {
+            // ─── RN-04: MELHOR CARTÃO PARA O MOMENTO ──────────────────────────────────────
+            //
+            // Se a fatura deste cartão fechou nos últimos 0-2 dias, é o melhor momento para
+            // usá-lo (maximiza o prazo de pagamento: até ~40 dias de prazo).
+            int diaFechamento = cartao.getDiaFechamento();
+            int diaFechamentoEfetivo = Math.min(diaFechamento, hoje.lengthOfMonth());
+            LocalDate dataFechamentoNoMes = hoje.withDayOfMonth(diaFechamentoEfetivo);
+            long diasDesdeOFechamento = ChronoUnit.DAYS.between(dataFechamentoNoMes, hoje);
+
+            if (diasDesdeOFechamento >= 0 && diasDesdeOFechamento <= 2) {
+                boolean jaExiste = insightsExistentes.stream()
+                        .anyMatch(ins -> ins.getTipo() == TipoInsight.MELHOR_CARTAO
+                                && ins.getMetadados() != null
+                                && ins.getMetadados().contains(cartao.getId().toString()));
+
+                if (!jaExiste) {
+                    int diaVencimento = cartao.getDiaVencimento();
+                    IaInsight insight = new IaInsight(
+                            usuario,
+                            TipoInsight.MELHOR_CARTAO,
+                            "Melhor momento para usar o " + cartao.getNome(),
+                            String.format("A fatura do %s fechou %s. Compras feitas agora só vencem no dia %d do mês que vem — você tem até ~30 dias de prazo sem juros.",
+                                    cartao.getNome(),
+                                    diasDesdeOFechamento == 0 ? "hoje" : "há " + diasDesdeOFechamento + " dia(s)",
+                                    diaVencimento),
+                            "{\"cartaoId\":\"" + cartao.getId() + "\",\"diaVencimento\":" + diaVencimento + "}"
+                    );
+                    iaInsightRepository.save(insight);
+                }
+            }
+
+            // ─── RN-11: ALERTA DE ESTOURO DE FATURA / COMPROMETIMENTO DE LIMITE ──────────
             BigDecimal limite = cartao.getLimite();
             BigDecimal disponivel = cartao.getLimiteDisponivel();
             if (limite.compareTo(BigDecimal.ZERO) > 0) {
                 BigDecimal comprometido = limite.subtract(disponivel);
-                double percentualComprometido = comprometido.divide(limite, 4, RoundingMode.HALF_UP)
+                double percentualComprometido = comprometido
+                        .divide(limite, 4, RoundingMode.HALF_UP)
                         .multiply(BigDecimal.valueOf(100)).doubleValue();
 
                 if (percentualComprometido >= 75.0) {
                     boolean jaExiste = insightsExistentes.stream()
-                            .anyMatch(ins -> ins.getTipo() == TipoInsight.ESTOURO_FATURA &&
-                                    ins.getMetadados() != null && ins.getMetadados().contains(cartao.getId().toString()));
+                            .anyMatch(ins -> ins.getTipo() == TipoInsight.ESTOURO_FATURA
+                                    && ins.getMetadados() != null
+                                    && ins.getMetadados().contains(cartao.getId().toString()));
 
                     if (!jaExiste) {
                         IaInsight insight = new IaInsight(
                                 usuario,
                                 TipoInsight.ESTOURO_FATURA,
                                 "Alerta de Comprometimento de Limite",
-                                "Atenção! Você possui " + percentualComprometido + "% do limite do seu cartão " + cartao.getNome() + " comprometido com compras parceladas.",
+                                String.format("Atenção! %.0f%% do limite do seu cartão %s (R$ %.2f de R$ %.2f) está comprometido com compras parceladas.",
+                                        percentualComprometido, cartao.getNome(), comprometido, limite),
                                 "{\"cartaoId\":\"" + cartao.getId() + "\",\"comprometidoPercentual\":" + percentualComprometido + "}"
-                        );
-                        iaInsightRepository.save(insight);
-                    }
-                }
-            }
-        }
-
-        // ─── RN-09: ASSINATURAS ESQUECIDAS (TRIAL HUNTER) ───
-        LocalDate trintaDiasAtras = hoje.minusDays(30);
-        List<Transacao> transacoesRecentes = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
-                usuarioId, trintaDiasAtras, hoje);
-
-        for (Transacao t : transacoesRecentes) {
-            BigDecimal v = t.getValor();
-            // Teste ou verificação (valores nulos ou < R$ 2.00)
-            if (v.compareTo(BigDecimal.ZERO) > 0 && v.compareTo(BigDecimal.valueOf(2.00)) <= 0) {
-                // Procurar transação idêntica (mesmo estabelecimento) com valor cheio nos dias seguintes (7, 14 ou 30)
-                List<Transacao> posteriores = transacoesRecentes.stream()
-                        .filter(p -> p.getData().isAfter(t.getData()) &&
-                                p.getDescricao().equalsIgnoreCase(t.getDescricao()) &&
-                                p.getValor().compareTo(BigDecimal.valueOf(10.00)) > 0)
-                        .collect(Collectors.toList());
-
-                if (!posteriores.isEmpty()) {
-                    Transacao cobrada = posteriores.get(0);
-                    boolean jaExiste = insightsExistentes.stream()
-                            .anyMatch(ins -> ins.getTipo() == TipoInsight.ASSINATURA_ESQUECIDA &&
-                                    ins.getMetadados() != null && ins.getMetadados().contains(cobrada.getDescricao()));
-
-                    if (!jaExiste) {
-                        IaInsight insight = new IaInsight(
-                                usuario,
-                                TipoInsight.ASSINATURA_ESQUECIDA,
-                                "Período de testes expirado",
-                                "Identificamos a primeira cobrança de valor cheio (R$ " + cobrada.getValor() + ") para " + cobrada.getDescricao() + ". O período gratuito (Free Trial) expirou.",
-                                "{\"estabelecimento\":\"" + cobrada.getDescricao() + "\",\"valor\":" + cobrada.getValor() + "}"
                         );
                         iaInsightRepository.save(insight);
                     }
@@ -428,56 +496,124 @@ public class IaService {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // RN-05 / RN-06 — ANÁLISE DE ASSINATURAS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Processa RN-05 (fadiga de assinatura) e RN-06 (reajuste silencioso) para o usuário.
+     *
+     * Usa diretamente o repositório de Assinaturas (entidade própria), não transações.
+     */
     public void processarInsightsAssinaturaParaUsuario(Usuario usuario) {
         UUID usuarioId = usuario.getId();
-        LocalDate hoje = LocalDate.now();
         List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
 
-        // ─── RN-06: ALERTA DE REAJUSTE SILENCIOSO / MENSALIDADES ───
-        // Buscar transações dos últimos 90 dias
-        LocalDate noventaDiasAtras = hoje.minusDays(90);
-        List<Transacao> transacoesRecentes = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
-                usuarioId, noventaDiasAtras, hoje);
+        List<Assinatura> todasAssinaturas = assinaturaRepository.findByUsuarioId(usuarioId);
+        List<Assinatura> assinaturasAtivas = todasAssinaturas.stream()
+                .filter(a -> Boolean.TRUE.equals(a.getAtivo()))
+                .collect(Collectors.toList());
 
-        // Agrupar transações pelo estabelecimento (descrição limpa)
-        Map<String, List<Transacao>> porEstabelecimento = transacoesRecentes.stream()
-                .filter(t -> t.getValor().compareTo(BigDecimal.ZERO) > 0)
-                .collect(Collectors.groupingBy(t -> higienizarDescricao(t.getDescricao())));
+        if (assinaturasAtivas.isEmpty()) return;
 
-        for (Map.Entry<String, List<Transacao>> entry : porEstabelecimento.entrySet()) {
-            String est = entry.getKey();
-            List<Transacao> txs = entry.getValue();
+        // ─── RN-05: FADIGA DE ASSINATURA ────────────────────────────────────────────────
+        //
+        // Agrupa assinaturas ativas pela categoria e dispara alerta se:
+        // - 3 ou mais assinaturas na mesma categoria, OU
+        // - Total mensal do grupo ultrapassa R$ 100,00
 
-            // Se tem pelo menos 2 ocorrências, podemos comparar reajustes
-            if (txs.size() >= 2) {
-                // Ordena por data decrescente (mais recente primeiro)
-                txs.sort((t1, t2) -> t2.getData().compareTo(t1.getData()));
-                Transacao maisRecente = txs.get(0);
-                Transacao anterior = txs.get(1);
+        // Converter valores para mensal equivalente para comparação justa
+        Map<String, List<Assinatura>> porCategoria = assinaturasAtivas.stream()
+                .collect(Collectors.groupingBy(a -> a.getCategoria().getNome()));
 
-                BigDecimal valorAtual = maisRecente.getValor();
-                BigDecimal valorAnterior = anterior.getValor();
+        for (Map.Entry<String, List<Assinatura>> entry : porCategoria.entrySet()) {
+            String nomeCategoria = entry.getKey();
+            List<Assinatura> grupo = entry.getValue();
 
-                if (valorAnterior.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal diferenca = valorAtual.subtract(valorAnterior);
-                    BigDecimal percentualAumento = diferenca.divide(valorAnterior, 4, RoundingMode.HALF_UP)
+            if (grupo.size() < 2) continue; // Precisa de pelo menos 2 para ser relevante
+
+            BigDecimal totalMensalGrupo = grupo.stream()
+                    .map(a -> calcularValorMensal(a))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            boolean fadigaPorQuantidade = grupo.size() >= 3;
+            boolean fadigaPorValor = totalMensalGrupo.compareTo(BigDecimal.valueOf(100.00)) > 0;
+
+            if (fadigaPorQuantidade || fadigaPorValor) {
+                String chaveCategoria = nomeCategoria.toLowerCase().replaceAll("\\s+", "_");
+                boolean jaExiste = insightsExistentes.stream()
+                        .anyMatch(ins -> ins.getTipo() == TipoInsight.FADIGA_ASSINATURA
+                                && ins.getMetadados() != null
+                                && ins.getMetadados().contains(chaveCategoria));
+
+                if (!jaExiste) {
+                    String nomesDasAssinaturas = grupo.stream()
+                            .map(Assinatura::getNome)
+                            .collect(Collectors.joining(", "));
+                    String motivo = fadigaPorQuantidade
+                            ? String.format("%d assinaturas na mesma categoria", grupo.size())
+                            : String.format("R$ %.2f/mês gastos em serviços similares", totalMensalGrupo);
+
+                    IaInsight insight = new IaInsight(
+                            usuario,
+                            TipoInsight.FADIGA_ASSINATURA,
+                            "Fadiga de Assinaturas: " + nomeCategoria,
+                            String.format("Você possui %s na categoria \"%s\" (%s): %s. Considere consolidar ou cancelar algum serviço redundante.",
+                                    motivo, nomeCategoria, formatarValor(totalMensalGrupo) + "/mês", nomesDasAssinaturas),
+                            "{\"categoria\":\"" + chaveCategoria + "\",\"totalMensal\":" + totalMensalGrupo + ",\"quantidade\":" + grupo.size() + "}"
+                    );
+                    iaInsightRepository.save(insight);
+                }
+            }
+        }
+
+        // ─── RN-06: REAJUSTE SILENCIOSO ────────────────────────────────────────────────
+        //
+        // Para cada assinatura ativa, busca as últimas transações geradas pelo scheduler
+        // (descrição "Assinatura: NOME") e compara os valores cobrados.
+        // Se houver aumento > 5% entre a penúltima e a última cobrança → alerta.
+
+        LocalDate noventaDiasAtras = LocalDate.now().minusDays(90);
+
+        for (Assinatura assinatura : assinaturasAtivas) {
+            String descricaoEsperada = "Assinatura: " + assinatura.getNome();
+
+            // Buscar transações desta assinatura ordenadas por data
+            List<Transacao> transacoesAssinatura = transacaoRepository
+                    .findTopByDescricaoLike(usuarioId, assinatura.getNome())
+                    .stream()
+                    .filter(t -> t.getDescricao() != null && t.getDescricao().equalsIgnoreCase(descricaoEsperada))
+                    .filter(t -> !t.getData().isBefore(noventaDiasAtras))
+                    .sorted(Comparator.comparing(Transacao::getData).reversed())
+                    .collect(Collectors.toList());
+
+            if (transacoesAssinatura.size() >= 2) {
+                BigDecimal valorMaisRecente = transacoesAssinatura.get(0).getValor();
+                BigDecimal valorAnterior = transacoesAssinatura.get(1).getValor();
+
+                if (valorAnterior.compareTo(BigDecimal.ZERO) > 0 && valorMaisRecente.compareTo(valorAnterior) > 0) {
+                    BigDecimal diferenca = valorMaisRecente.subtract(valorAnterior);
+                    BigDecimal percentualAumento = diferenca
+                            .divide(valorAnterior, 4, RoundingMode.HALF_UP)
                             .multiply(BigDecimal.valueOf(100));
 
-                    // Se houve aumento superior a 5% (RN-06)
                     if (percentualAumento.compareTo(BigDecimal.valueOf(5.0)) > 0) {
                         boolean jaExiste = insightsExistentes.stream()
-                                .anyMatch(ins -> ins.getTipo() == TipoInsight.REAJUSTE_SILENCIOSO &&
-                                        ins.getMetadados() != null && ins.getMetadados().contains(est));
+                                .anyMatch(ins -> ins.getTipo() == TipoInsight.REAJUSTE_SILENCIOSO
+                                        && ins.getMetadados() != null
+                                        && ins.getMetadados().contains(assinatura.getId().toString()));
 
                         if (!jaExiste) {
                             IaInsight insight = new IaInsight(
                                     usuario,
                                     TipoInsight.REAJUSTE_SILENCIOSO,
-                                    "Reajuste silencioso detectado",
-                                    "Identificamos um aumento de " + percentualAumento.setScale(1, RoundingMode.HALF_UP) +
-                                            "% no valor cobrado por " + maisRecente.getDescricao() +
-                                            ". Passou de R$ " + valorAnterior + " para R$ " + valorAtual + ".",
-                                    "{\"estabelecimento\":\"" + est + "\",\"valorAnterior\":" + valorAnterior + ",\"valorAtual\":" + valorAtual + "}"
+                                    "Reajuste silencioso: " + assinatura.getNome(),
+                                    String.format("A cobrança de \"%s\" aumentou %.1f%% — de R$ %.2f para R$ %.2f. Nenhuma mudança de plano foi registrada. Vale verificar.",
+                                            assinatura.getNome(),
+                                            percentualAumento.doubleValue(),
+                                            valorAnterior,
+                                            valorMaisRecente),
+                                    "{\"assinaturaId\":\"" + assinatura.getId() + "\",\"nome\":\"" + assinatura.getNome() + "\",\"valorAnterior\":" + valorAnterior + ",\"valorAtual\":" + valorMaisRecente + "}"
                             );
                             iaInsightRepository.save(insight);
                         }
@@ -487,116 +623,191 @@ public class IaService {
         }
     }
 
-    public void processarInsightsCartaoParaUsuario(Usuario usuario) {
+    // ═══════════════════════════════════════════════════════════════════
+    // RN-09 — ASSINATURAS ESQUECIDAS (TRIAL HUNTER)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private void processarTrialHunter(Usuario usuario) {
         UUID usuarioId = usuario.getId();
         LocalDate hoje = LocalDate.now();
+        LocalDate trintaDiasAtras = hoje.minusDays(30);
         List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
 
-        // Limpeza de duplicados órfãos
+        List<Transacao> transacoesRecentes = transacaoRepository
+                .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, trintaDiasAtras, hoje);
+
+        for (Transacao t : transacoesRecentes) {
+            BigDecimal v = t.getValor();
+            // Detectar transação de teste (valor de R$0 a R$2)
+            if (v.compareTo(BigDecimal.ZERO) > 0 && v.compareTo(BigDecimal.valueOf(2.00)) <= 0) {
+                // Procurar transação do mesmo estabelecimento com valor cheio nos dias seguintes
+                List<Transacao> posteriores = transacoesRecentes.stream()
+                        .filter(p -> p.getData().isAfter(t.getData()))
+                        .filter(p -> p.getDescricao() != null && p.getDescricao().equalsIgnoreCase(t.getDescricao()))
+                        .filter(p -> p.getValor().compareTo(BigDecimal.valueOf(10.00)) > 0)
+                        .collect(Collectors.toList());
+
+                if (!posteriores.isEmpty()) {
+                    Transacao cobrada = posteriores.get(0);
+                    boolean jaExiste = insightsExistentes.stream()
+                            .anyMatch(ins -> ins.getTipo() == TipoInsight.ASSINATURA_ESQUECIDA
+                                    && ins.getMetadados() != null
+                                    && ins.getMetadados().contains(cobrada.getDescricao()));
+
+                    if (!jaExiste) {
+                        IaInsight insight = new IaInsight(
+                                usuario,
+                                TipoInsight.ASSINATURA_ESQUECIDA,
+                                "Período de testes expirado",
+                                String.format("Identificamos a primeira cobrança de valor cheio (R$ %.2f) para \"%s\". O período gratuito (Free Trial) pode ter expirado.",
+                                        cobrada.getValor().doubleValue(), cobrada.getDescricao()),
+                                "{\"estabelecimento\":\"" + cobrada.getDescricao() + "\",\"valor\":" + cobrada.getValor() + "}"
+                        );
+                        iaInsightRepository.save(insight);
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RN-03 — SIMULAÇÃO DE COMPRA PARCELADA
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * RN-03: Simula o impacto futuro de uma compra parcelada nas faturas futuras do cartão.
+     * Retorna projeção mensal e alerta se comprometer mais de 30% do limite.
+     */
+    public Map<String, Object> simularCompraParcela(UUID cartaoId, BigDecimal valorTotal, int numeroParcelas, UUID usuarioId) {
+        Cartao cartao = cartaoRepository.findByIdAndUsuarioIdAndAtivoTrue(cartaoId, usuarioId)
+                .orElseThrow(() -> new RuntimeException("Cartão não encontrado."));
+
+        BigDecimal valorParcela = valorTotal.divide(BigDecimal.valueOf(numeroParcelas), 2, RoundingMode.HALF_UP);
+        BigDecimal limiteDisponivel = cartao.getLimiteDisponivel();
+        BigDecimal limiteTotal = cartao.getLimite();
+
+        LocalDate hoje = LocalDate.now();
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM");
+
+        List<Map<String, Object>> projecoesMensais = new ArrayList<>();
+        BigDecimal totalComprometidoFuturo = BigDecimal.ZERO;
+
+        for (int i = 0; i < numeroParcelas; i++) {
+            LocalDate mesReferencia = hoje.plusMonths(i).withDayOfMonth(1);
+
+            // Buscar faturas já existentes para este mês/cartão
+            Optional<Fatura> faturaExistente = faturaRepository
+                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartaoId, usuarioId, mesReferencia);
+
+            BigDecimal valorJaNaFatura = faturaExistente
+                    .map(Fatura::getValorTotal)
+                    .orElse(BigDecimal.ZERO);
+
+            BigDecimal valorComParcela = valorJaNaFatura.add(valorParcela);
+            totalComprometidoFuturo = totalComprometidoFuturo.add(valorParcela);
+
+            Map<String, Object> projecao = new HashMap<>();
+            projecao.put("mes", mesReferencia.format(fmt));
+            projecao.put("valorJaNaFatura", valorJaNaFatura);
+            projecao.put("valorParcela", valorParcela);
+            projecao.put("valorComParcela", valorComParcela);
+            projecoesMensais.add(projecao);
+        }
+
+        // Verificar se compromete mais de 30% do limite total (RN-03)
+        double percentualDoLimite = limiteTotal.compareTo(BigDecimal.ZERO) > 0
+                ? valorTotal.divide(limiteTotal, 4, RoundingMode.HALF_UP)
+                        .multiply(BigDecimal.valueOf(100)).doubleValue()
+                : 0.0;
+
+        boolean impactoNegativo = percentualDoLimite >= 30.0 || valorTotal.compareTo(limiteDisponivel) > 0;
+
+        String mensagem;
+        if (valorTotal.compareTo(limiteDisponivel) > 0) {
+            mensagem = String.format("Atenção! O valor total de R$ %.2f supera seu limite disponível atual de R$ %.2f.",
+                    valorTotal, limiteDisponivel);
+        } else if (impactoNegativo) {
+            mensagem = String.format("Essa compra comprometerá %.0f%% do seu limite total. As parcelas de R$ %.2f/mês impactarão suas próximas %d faturas.",
+                    percentualDoLimite, valorParcela, numeroParcelas);
+        } else {
+            mensagem = String.format("Compra dentro da capacidade. Parcelas de R$ %.2f/mês por %d meses, comprometendo %.0f%% do limite.",
+                    valorParcela, numeroParcelas, percentualDoLimite);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("impactoNegativo", impactoNegativo);
+        result.put("mensagem", mensagem);
+        result.put("valorParcela", valorParcela);
+        result.put("percentualDoLimite", Math.round(percentualDoLimite * 10.0) / 10.0);
+        result.put("limiteDisponivel", limiteDisponivel);
+        result.put("projecoesMensais", projecoesMensais);
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // HELPERS INTERNOS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Remove insights de cobrança duplicada cujas transações associadas foram excluídas/inativadas.
+     */
+    private void limparInsightsOrfaos(UUID usuarioId) {
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
         for (IaInsight ins : insightsExistentes) {
             if (ins.getTipo() == TipoInsight.COBRANCA_DUPLICADA && ins.getMetadados() != null) {
                 try {
                     Map<?, ?> meta = objectMapper.readValue(ins.getMetadados(), Map.class);
                     List<?> ids = (List<?>) meta.get("transacoesEnvolvidas");
                     if (ids != null) {
-                        boolean algumaAtiva = false;
-                        for (Object idStr : ids) {
-                            Optional<Transacao> tOpt = transacaoRepository.findByIdAndUsuarioIdAndAtivoTrue(
-                                    UUID.fromString((String) idStr), usuarioId);
-                            if (tOpt.isPresent()) {
-                                algumaAtiva = true;
+                        boolean todasInativas = ids.stream().noneMatch(idStr -> {
+                            try {
+                                return transacaoRepository
+                                        .findByIdAndUsuarioIdAndAtivoTrue(UUID.fromString((String) idStr), usuarioId)
+                                        .isPresent();
+                            } catch (Exception e) {
+                                return false;
                             }
-                        }
-                        if (!algumaAtiva) {
+                        });
+                        if (todasInativas) {
                             iaInsightRepository.delete(ins);
                         }
                     }
                 } catch (Exception ignored) {}
             }
         }
+    }
 
-        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
-        for (Cartao cartao : cartoes) {
-            // ─── RN-01: PREVISÃO DE FECHAMENTO (BURN RATE / MÉDIA HISTÓRICA DE 6 MESES) ───
-            LocalDate inicioMes = hoje.withDayOfMonth(1);
-            List<Transacao> transacoesMes = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
-                    usuarioId, inicioMes, hoje);
+    /**
+     * Converte o valor de uma assinatura para equivalente mensal.
+     * - MENSAL: valor direto
+     * - ANUAL: valor / 12
+     * - TRIMESTRAL: valor / 3
+     * - PERSONALIZADO: estimativa baseada na unidade/frequência
+     */
+    private BigDecimal calcularValorMensal(Assinatura assinatura) {
+        BigDecimal valor = assinatura.getValor();
+        if (valor == null || valor.compareTo(BigDecimal.ZERO) == 0) return BigDecimal.ZERO;
 
-            BigDecimal totalGastos = transacoesMes.stream()
-                    .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                    .map(Transacao::getValor)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-            long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
-            if (diasPassados >= 3 && totalGastos.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal mediaDiaria = totalGastos.divide(BigDecimal.valueOf(diasPassados), 2, RoundingMode.HALF_UP);
-                int diasNoMes = hoje.lengthOfMonth();
-                BigDecimal fechamentoProjetado = mediaDiaria.multiply(BigDecimal.valueOf(diasNoMes));
-
-                // Buscar transações dos últimos 6 meses para estabelecer a média histórica dinâmica do cartão
-                LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
-                List<Transacao> transacoesHistoricas = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
-                        usuarioId, seisMesesAtras, inicioMes.minusDays(1));
-
-                BigDecimal totalHistorico = transacoesHistoricas.stream()
-                        .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                        .map(Transacao::getValor)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-                // Calcular média mensal histórica real do cartão
-                BigDecimal mediaMensalHistorica = BigDecimal.valueOf(300.00); // Fallback padrão mínimo
-                long totalDiasHistorico = ChronoUnit.DAYS.between(seisMesesAtras, inicioMes.minusDays(1)) + 1;
-                if (totalDiasHistorico > 30 && totalHistorico.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal mediaDiariaHistorica = totalHistorico.divide(BigDecimal.valueOf(totalDiasHistorico), 2, RoundingMode.HALF_UP);
-                    mediaMensalHistorica = mediaDiariaHistorica.multiply(BigDecimal.valueOf(30));
+        return switch (assinatura.getTipoRecorrencia()) {
+            case ANUAL -> valor.divide(BigDecimal.valueOf(12), 2, RoundingMode.HALF_UP);
+            case TRIMESTRAL -> valor.divide(BigDecimal.valueOf(3), 2, RoundingMode.HALF_UP);
+            case PERSONALIZADO -> {
+                if (assinatura.getFrequencia() == null || assinatura.getUnidadeFrequencia() == null) {
+                    yield valor;
                 }
-
-                // Dispara o alerta se a projeção da fatura atual for pelo menos 15% superior à média dinâmica de 6 meses
-                BigDecimal margemAlerta = mediaMensalHistorica.multiply(BigDecimal.valueOf(1.15));
-                if (fechamentoProjetado.compareTo(margemAlerta) > 0) {
-                    boolean jaExiste = insightsExistentes.stream()
-                            .anyMatch(ins -> ins.getTipo() == TipoInsight.CARTAO_PREVISAO &&
-                                    ins.getMetadados() != null && ins.getMetadados().contains(cartao.getId().toString()));
-
-                    if (!jaExiste) {
-                        IaInsight insight = new IaInsight(
-                                usuario,
-                                TipoInsight.CARTAO_PREVISAO,
-                                "Previsão de Fatura Acima do Histórico",
-                                "Neste ritmo, a fatura do seu cartão " + cartao.getNome() + " fechará projetada em R$ " + fechamentoProjetado +
-                                        ", o que é superior à sua média mensal dos últimos 6 meses (R$ " + mediaMensalHistorica.setScale(2, RoundingMode.HALF_UP) + "). Pise no freio.",
-                                "{\"cartaoId\":\"" + cartao.getId() + "\",\"projetado\":" + fechamentoProjetado + ",\"mediaHistorica\":" + mediaMensalHistorica + "}"
-                        );
-                        iaInsightRepository.save(insight);
-                    }
-                }
+                yield switch (assinatura.getUnidadeFrequencia()) {
+                    case ANOS -> valor.divide(BigDecimal.valueOf(12L * assinatura.getFrequencia()), 2, RoundingMode.HALF_UP);
+                    case MESES -> assinatura.getFrequencia() > 1
+                            ? valor.divide(BigDecimal.valueOf(assinatura.getFrequencia()), 2, RoundingMode.HALF_UP)
+                            : valor;
+                    case SEMANAS -> valor.multiply(BigDecimal.valueOf(4));
+                };
             }
+            default -> valor; // MENSAL
+        };
+    }
 
-            // ─── RN-11: ALERTA DE ESTOURO DE FATURA / COMPROMETIMENTO DE LIMITE ───
-            BigDecimal limite = cartao.getLimite();
-            BigDecimal disponivel = cartao.getLimiteDisponivel();
-            if (limite.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal comprometido = limite.subtract(disponivel);
-                double percentualComprometido = comprometido.divide(limite, 4, RoundingMode.HALF_UP)
-                        .multiply(BigDecimal.valueOf(100)).doubleValue();
-
-                if (percentualComprometido >= 75.0) {
-                    boolean jaExiste = insightsExistentes.stream()
-                            .anyMatch(ins -> ins.getTipo() == TipoInsight.ESTOURO_FATURA &&
-                                    ins.getMetadados() != null && ins.getMetadados().contains(cartao.getId().toString()));
-
-                    if (!jaExiste) {
-                        IaInsight insight = new IaInsight(
-                                usuario,
-                                TipoInsight.ESTOURO_FATURA,
-                                "Alerta de Comprometimento de Limite",
-                                "Atenção! Você possui " + percentualComprometido + "% do limite do seu cartão " + cartao.getNome() + " comprometido com compras parceladas.",
-                                "{\"cartaoId\":\"" + cartao.getId() + "\",\"comprometidoPercentual\":" + percentualComprometido + "}"
-                        );
-                        iaInsightRepository.save(insight);
-                    }
-                }
-            }
-        }
+    private String formatarValor(BigDecimal valor) {
+        return String.format("R$ %.2f", valor);
     }
 }
