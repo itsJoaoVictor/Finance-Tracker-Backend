@@ -48,6 +48,13 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
     List<Transacao> findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
         UUID usuarioId, LocalDate inicio, LocalDate fim);
 
+    List<Transacao> findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataDesc(
+        UUID usuarioId, LocalDate inicio, LocalDate fim);
+
+    List<Transacao> findByUsuarioIdAndAtivoTrueAndDataAfter(UUID usuarioId, LocalDate data);
+
+
+
     @Query("SELECT t FROM Transacao t WHERE t.usuario.id = :usuarioId AND t.ativo = true " +
            "AND LOWER(t.descricao) LIKE LOWER(CONCAT('%', :descricao, '%')) " +
            "ORDER BY t.criadoEm DESC")

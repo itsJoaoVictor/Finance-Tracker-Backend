@@ -160,7 +160,12 @@ public class CartaoService {
                 }
                 }
             }
-            return new CartaoResponse(c, faturaCartao, status, faturaRef != null ? faturaRef.toString() : null);
+            // Fallback: sempre exibir o mês de referência atual quando não há fatura específica
+            if (faturaRef == null) {
+                faturaRef = mesReferenciaAtual;
+            }
+
+            return new CartaoResponse(c, faturaCartao, status, faturaRef.toString());
         }).toList();
     }
 
@@ -226,7 +231,11 @@ public class CartaoService {
                 }
             }
         }
-        return new CartaoResponse(cartao, faturaCartao, status, faturaRef != null ? faturaRef.toString() : null);
+        // Fallback: sempre exibir o mês de referência atual quando não há fatura específica
+        if (faturaRef == null) {
+            faturaRef = mesReferenciaAtual;
+        }
+        return new CartaoResponse(cartao, faturaCartao, status, faturaRef.toString());
     }
 
     @Transactional

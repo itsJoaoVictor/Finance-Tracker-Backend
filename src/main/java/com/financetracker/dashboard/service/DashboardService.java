@@ -84,19 +84,91 @@ public class DashboardService {
             // Preferencias de layout
             DashboardResumoResponse.PreferenciasLayout preferencias = getPreferenciasLayout(usuarioId);
 
-            // KPIs
+            // Determinar inicio e fim do periodo
+            LocalDate hoje = LocalDate.now();
+            LocalDate inicio;
+            LocalDate fim;
+            if ("ULTIMOS_30_DIAS".equals(periodo)) {
+                inicio = hoje.minusDays(30);
+                fim = hoje;
+            } else if ("MES_ANTERIOR".equals(periodo)) {
+                LocalDate mesAnterior = hoje.minusMonths(1);
+                inicio = mesAnterior.withDayOfMonth(1);
+                fim = mesAnterior.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+            } else { // MES_ATUAL or default
+                inicio = hoje.withDayOfMonth(1);
+                fim = hoje.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+            }
+
+            // Transacoes do período selecionado
+            List<Transacao> transacoesPeriodo = transacaoRepository
+                    .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataDesc(usuarioId, inicio, fim);
+
+            // Transacoes apos a data de fim do periodo (usadas para reverter saldos e limite de credito para o estado historico)
+            List<Transacao> transacoesPosPeriodo = transacaoRepository.findByUsuarioIdAndAtivoTrueAndDataAfter(usuarioId, fim);
+
+            Map<UUID, BigDecimal> contaAjustes = new HashMap<>();
+            Map<UUID, BigDecimal> cartaoLimiteAjustes = new HashMap<>();
+
+            for (Transacao t : transacoesPosPeriodo) {
+                BigDecimal valor = t.getValor() != null ? t.getValor() : BigDecimal.ZERO;
+                if (t.getContaOrigem() != null) {
+                    UUID oid = t.getContaOrigem().getId();
+                    contaAjustes.put(oid, contaAjustes.getOrDefault(oid, BigDecimal.ZERO).add(valor));
+                }
+                if (t.getContaDestino() != null) {
+                    UUID did = t.getContaDestino().getId();
+                    contaAjustes.put(did, contaAjustes.getOrDefault(did, BigDecimal.ZERO).subtract(valor));
+                }
+                if (t.getCartao() != null) {
+                    UUID cid = t.getCartao().getId();
+                    if (t.getTipo() == TipoTransacao.COMPRA_CREDITO) {
+                        cartaoLimiteAjustes.put(cid, cartaoLimiteAjustes.getOrDefault(cid, BigDecimal.ZERO).add(valor));
+                    } else if (t.getTipo() == TipoTransacao.PAGAMENTO_CREDITO) {
+                        cartaoLimiteAjustes.put(cid, cartaoLimiteAjustes.getOrDefault(cid, BigDecimal.ZERO).subtract(valor));
+                    }
+                }
+            }
+
+            // KPIs & Contas
             List<ContaResponse> contas = contaService.listar();
-            BigDecimal saldoTotal = contas.stream()
-                    .map(ContaResponse::saldo)
+            List<DashboardResumoResponse.ContaDashboard> contasDash = contas.stream()
+                    .map(c -> {
+                        BigDecimal saldoHistorico = c.saldo().add(contaAjustes.getOrDefault(c.id(), BigDecimal.ZERO));
+                        return new DashboardResumoResponse.ContaDashboard(
+                                c.id(), c.nome(), c.tipo().name(), saldoHistorico, c.corHexadecimal());
+                    })
+                    .toList();
+
+            BigDecimal saldoTotal = contasDash.stream()
+                    .map(DashboardResumoResponse.ContaDashboard::saldo)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+            // Cartoes
             List<CartaoResponse> cartoes = cartaoService.listar();
-            BigDecimal faturaTotal = cartoes.stream()
-                    .map(CartaoResponse::faturaEstimada)
-                    .filter(Objects::nonNull)
+            List<DashboardResumoResponse.CartaoDashboard> cartoesDash = cartoes.stream()
+                    .map(c -> {
+                        BigDecimal fatura;
+                        if ("MES_ANTERIOR".equals(periodo)) {
+                            LocalDate mesRef = LocalDate.now().minusMonths(1).withDayOfMonth(1);
+                            fatura = faturaRepository.findByCartaoIdAndUsuarioIdAndMesReferencia(c.id(), usuarioId, mesRef)
+                                    .map(Fatura::getValorTotal)
+                                    .orElse(BigDecimal.ZERO);
+                        } else {
+                            fatura = c.faturaEstimada() != null ? c.faturaEstimada() : BigDecimal.ZERO;
+                        }
+                        BigDecimal limiteAtual = c.limiteDisponivel() != null ? c.limiteDisponivel() : BigDecimal.ZERO;
+                        BigDecimal limiteHistorico = limiteAtual.add(cartaoLimiteAjustes.getOrDefault(c.id(), BigDecimal.ZERO));
+                        return new DashboardResumoResponse.CartaoDashboard(
+                                c.id(), c.nome(), fatura, limiteHistorico, c.corHexadecimal());
+                    })
+                    .toList();
+
+            BigDecimal faturaTotal = cartoesDash.stream()
+                    .map(DashboardResumoResponse.CartaoDashboard::faturaAtual)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            BigDecimal limiteTotalDisponivel = cartoes.stream()
-                    .map(CartaoResponse::limiteDisponivel)
+            BigDecimal limiteTotalDisponivel = cartoesDash.stream()
+                    .map(DashboardResumoResponse.CartaoDashboard::limiteDisponivel)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
 
             DashboardResumoResponse.Kpis kpis = new DashboardResumoResponse.Kpis(
@@ -105,23 +177,12 @@ public class DashboardService {
             // Projeção 15 dias
             DashboardResumoResponse.Projecao15Dias projecao = calcularProjecao15Dias(usuarioId, contas);
 
-            // Contas
-            List<DashboardResumoResponse.ContaDashboard> contasDash = contas.stream()
-                    .map(c -> new DashboardResumoResponse.ContaDashboard(
-                            c.id(), c.nome(), c.tipo().name(), c.saldo(), c.corHexadecimal()))
-                    .toList();
-
-            // Cartoes
-            List<DashboardResumoResponse.CartaoDashboard> cartoesDash = cartoes.stream()
-                    .map(c -> new DashboardResumoResponse.CartaoDashboard(
-                            c.id(), c.nome(), c.faturaEstimada(), c.limiteDisponivel(), c.corHexadecimal()))
-                    .toList();
-
-            // Últimas 5 transações
-            List<DashboardResumoResponse.TransacaoDashboard> ultimasTransacoes = buscarUltimasTransacoes(usuarioId);
+            // Transações do período selecionado
+            List<DashboardResumoResponse.TransacaoDashboard> ultimasTransacoes = buscarTransacoesPeriodo(usuarioId, periodo);
 
             // Insights ativos não lidos
             List<DashboardResumoResponse.InsightDashboard> insights = buscarInsightsAtivos(usuarioId);
+
 
             return new DashboardResumoResponse(preferencias, kpis, projecao, contasDash, cartoesDash,
                     ultimasTransacoes, insights);
@@ -235,13 +296,28 @@ public class DashboardService {
         return new DashboardResumoResponse.Projecao15Dias(saldoProjetado, status, msg.toString().trim());
     }
 
-    private List<DashboardResumoResponse.TransacaoDashboard> buscarUltimasTransacoes(UUID usuarioId) {
+    private List<DashboardResumoResponse.TransacaoDashboard> buscarTransacoesPeriodo(UUID usuarioId, String periodo) {
+        LocalDate hoje = LocalDate.now();
+        LocalDate inicio;
+        LocalDate fim;
+
+        if ("ULTIMOS_30_DIAS".equals(periodo)) {
+            inicio = hoje.minusDays(30);
+            fim = hoje;
+        } else if ("MES_ANTERIOR".equals(periodo)) {
+            LocalDate mesAnterior = hoje.minusMonths(1);
+            inicio = mesAnterior.withDayOfMonth(1);
+            fim = mesAnterior.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+        } else { // MES_ATUAL or default
+            inicio = hoje.withDayOfMonth(1);
+            fim = hoje.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+        }
+
         List<Transacao> transacoes = transacaoRepository
-                .findByUsuarioIdAndAtivoTrueOrderByDataDesc(usuarioId);
+                .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataDesc(usuarioId, inicio, fim);
 
         return transacoes.stream()
                 .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
-                .limit(5)
                 .map(t -> new DashboardResumoResponse.TransacaoDashboard(
                         t.getId(),
                         t.getDescricao(),
@@ -250,10 +326,11 @@ public class DashboardService {
                         t.getCategoria() != null ? t.getCategoria().getNome() : null,
                         t.getCategoria() != null ? t.getCategoria().getIcone() : null,
                         t.getCategoria() != null ? t.getCategoria().getCorHexadecimal() : null,
-                        t.getCriadoEm()
+                        t.getData() != null ? t.getData().atStartOfDay() : t.getCriadoEm()
                 ))
                 .toList();
     }
+
 
     private List<DashboardResumoResponse.InsightDashboard> buscarInsightsAtivos(UUID usuarioId) {
         List<IaInsight> insights = iaInsightRepository
