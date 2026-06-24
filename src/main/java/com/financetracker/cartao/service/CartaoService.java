@@ -123,7 +123,7 @@ public class CartaoService {
                     if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
                     if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
                             && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
-                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
+                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal());
                         temFechadaOuAtrasada = true;
                         if (faturaRef == null) {
                             faturaRef = f.getMesReferencia();
@@ -188,7 +188,7 @@ public class CartaoService {
                 if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
                 if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
                         && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
-                    fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
+                    fechadasPendentes = fechadasPendentes.add(f.getValorTotal());
                     temFechadaOuAtrasada = true;
                     if (faturaRef == null) {
                         faturaRef = f.getMesReferencia();
@@ -312,7 +312,7 @@ public class CartaoService {
                     if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
                     if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
                             && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
-                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
+                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal());
                         temFechadaOuAtrasada = true;
                     }
                 }

@@ -409,15 +409,15 @@ public class IaService {
                         if (percentualDesvio > 15.0) {
                             titulo = "Fatura Acima da Média";
                             mensagem = String.format(
-                                    "A fatura do %s fechou em R$ %.2f — %.0f%% acima da sua média dos últimos %d meses (R$ %.2f).",
+                                    "A fatura do %s fechou em R$ %.2f — %.0f%% acima da sua média dos últimos 6 meses (R$ %.2f).",
                                     cartao.getNome(), valorFaturaFechada,
-                                    percentualDesvio, faturasFechadas.size(), mediaMensalHistorica);
+                                    percentualDesvio, mediaMensalHistorica);
                         } else if (percentualDesvio < -15.0) {
                             titulo = "Fatura Abaixo da Média";
                             mensagem = String.format(
-                                    "Ótimo! A fatura do %s fechou em R$ %.2f — %.0f%% abaixo da sua média dos últimos %d meses (R$ %.2f). Continue assim!",
+                                    "Ótimo! A fatura do %s fechou em R$ %.2f — %.0f%% abaixo da sua média dos últimos 6 meses (R$ %.2f). Continue assim!",
                                     cartao.getNome(), valorFaturaFechada,
-                                    Math.abs(percentualDesvio), faturasFechadas.size(), mediaMensalHistorica);
+                                    Math.abs(percentualDesvio), mediaMensalHistorica);
                         } else {
                             // Dentro da faixa normal: não gerar insight (não é relevante)
                             titulo = null;
@@ -464,9 +464,9 @@ public class IaService {
                                         .multiply(BigDecimal.valueOf(100))).doubleValue();
 
                                 String mensagem = String.format(
-                                        "Neste ritmo, a fatura do %s fechará em R$ %.2f — %.0f%% acima da sua média dos últimos %d meses (R$ %.2f). Pise no freio.",
+                                        "Neste ritmo, a fatura do %s fechará em R$ %.2f — %.0f%% acima da sua média dos últimos 6 meses (R$ %.2f). Pise no freio.",
                                         cartao.getNome(), fechamentoProjetado,
-                                        percentualAcima, faturasFechadas.size(), mediaMensalHistorica);
+                                        percentualAcima, mediaMensalHistorica);
 
                                 IaInsight insight = new IaInsight(
                                         usuario,
