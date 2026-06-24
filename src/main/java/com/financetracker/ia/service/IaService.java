@@ -349,86 +349,134 @@ public class IaService {
 
         for (Cartao cartao : cartoes) {
 
-            // ─── RN-01: PREVISÃO DE FECHAMENTO (BURN RATE) ─────────────────────────────────
+            // ─── RN-01: ANÁLISE DA FATURA (ABERTA = previsão | FECHADA = comparação histórica) ─
             //
             // Regras:
-            // 1. Só conta COMPRA_CREDITO com numeroParcela == null OU numeroParcela == 1 (compras novas)
-            // 2. Só dispara a partir do dia 10 do mês (dados suficientes para projeção)
-            // 3. Média histórica calculada sobre faturas FECHADAS/PAGAS dos últimos 6 meses
-            // 4. Alerta somente se projeção > média + 15%
+            // • Fatura ABERTA:  dispara previsão se ritmo >= 15% acima da média histórica (6 meses)
+            //                   somente após dia 10 do mês e com ao menos algum gasto primário
+            // • Fatura FECHADA: compara o valorTotal real com a média de 6 meses e informa se
+            //                   ficou acima, abaixo ou dentro da faixa esperada (sem "previsão")
+            // Em ambos os casos: filtra apenas COMPRA_CREDITO primárias (numeroParcela null ou 1)
 
-            long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
+            // Calcular média histórica dos últimos 6 meses (sempre, para ambos os caminhos)
+            LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
+            List<Fatura> faturasFechadas = faturaRepository
+                    .findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuarioId)
+                    .stream()
+                    .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
+                    .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
+                    .filter(f -> f.getMesReferencia().isBefore(inicioMes))
+                    .collect(Collectors.toList());
 
-            if (diasPassados >= 10) {
-                // Buscar apenas compras primárias do mês atual para este cartão
-                List<Transacao> transacoesMes = transacaoRepository
-                        .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
-                        .stream()
-                        .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                        .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
-                        .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
-                        .collect(Collectors.toList());
-
-                BigDecimal totalGastosMes = transacoesMes.stream()
-                        .map(Transacao::getValor)
+            BigDecimal mediaMensalHistorica;
+            if (!faturasFechadas.isEmpty()) {
+                BigDecimal totalHistorico = faturasFechadas.stream()
+                        .map(Fatura::getValorTotal)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
+                mediaMensalHistorica = totalHistorico
+                        .divide(BigDecimal.valueOf(faturasFechadas.size()), 2, RoundingMode.HALF_UP);
+            } else {
+                mediaMensalHistorica = null; // sem histórico suficiente: não gerar insight
+            }
 
-                if (totalGastosMes.compareTo(BigDecimal.ZERO) > 0) {
-                    // Projetar fechamento com base na taxa diária atual
-                    BigDecimal mediaDiaria = totalGastosMes.divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP);
-                    int diasNoMes = hoje.lengthOfMonth();
-                    BigDecimal fechamentoProjetado = mediaDiaria.multiply(BigDecimal.valueOf(diasNoMes)).setScale(2, RoundingMode.HALF_UP);
+            // Verificar se a fatura do mês atual está ABERTA ou FECHADA
+            Optional<Fatura> faturaAtualOpt = faturaRepository
+                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, inicioMes);
 
-                    // Calcular média histórica usando FATURAS FECHADAS dos últimos 6 meses
-                    LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
-                    List<Fatura> faturasFechadas = faturaRepository
-                            .findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuarioId)
-                            .stream()
-                            .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
-                            .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
-                            .filter(f -> f.getMesReferencia().isBefore(inicioMes))
-                            .collect(Collectors.toList());
+            boolean faturaAtualFechada = faturaAtualOpt
+                    .map(f -> STATUS_FECHADOS.contains(f.getStatus()))
+                    .orElse(false);
 
-                    BigDecimal mediaMensalHistorica;
-                    if (!faturasFechadas.isEmpty()) {
-                        BigDecimal totalHistorico = faturasFechadas.stream()
-                                .map(Fatura::getValorTotal)
-                                .reduce(BigDecimal.ZERO, BigDecimal::add);
-                        mediaMensalHistorica = totalHistorico
-                                .divide(BigDecimal.valueOf(faturasFechadas.size()), 2, RoundingMode.HALF_UP);
-                    } else {
-                        // Fallback: sem histórico suficiente, usa o valor projetado como base
-                        mediaMensalHistorica = BigDecimal.valueOf(300.00);
-                    }
+            boolean jaExistePrevisao = insightsExistentes.stream()
+                    .anyMatch(ins -> ins.getTipo() == TipoInsight.CARTAO_PREVISAO
+                            && ins.getMetadados() != null
+                            && ins.getMetadados().contains(cartao.getId().toString()));
 
-                    // Dispara o alerta se a projeção for pelo menos 15% acima da média histórica
-                    BigDecimal limiarAlerta = mediaMensalHistorica.multiply(BigDecimal.valueOf(1.15)).setScale(2, RoundingMode.HALF_UP);
+            if (!jaExistePrevisao && mediaMensalHistorica != null) {
 
-                    if (fechamentoProjetado.compareTo(limiarAlerta) > 0) {
-                        boolean jaExiste = insightsExistentes.stream()
-                                .anyMatch(ins -> ins.getTipo() == TipoInsight.CARTAO_PREVISAO
-                                        && ins.getMetadados() != null
-                                        && ins.getMetadados().contains(cartao.getId().toString()));
+                if (faturaAtualFechada) {
+                    // ── Caminho A: FATURA FECHADA — comparação real vs histórico ──────────────
+                    // Usa o valorTotal real da fatura fechada para comparar com a média
+                    BigDecimal valorFaturaFechada = faturaAtualOpt.get().getValorTotal();
+                    if (valorFaturaFechada.compareTo(BigDecimal.ZERO) > 0) {
+                        BigDecimal desvio = valorFaturaFechada.subtract(mediaMensalHistorica);
+                        double percentualDesvio = desvio
+                                .divide(mediaMensalHistorica, 4, RoundingMode.HALF_UP)
+                                .multiply(BigDecimal.valueOf(100)).doubleValue();
 
-                        if (!jaExiste) {
-                            String mensagem = String.format(
-                                    "Neste ritmo, a fatura do %s fechará em R$ %.2f — %.0f%% acima da sua média dos últimos %d meses (R$ %.2f). Pise no freio.",
-                                    cartao.getNome(),
-                                    fechamentoProjetado,
-                                    ((fechamentoProjetado.subtract(mediaMensalHistorica))
-                                            .divide(mediaMensalHistorica, 4, RoundingMode.HALF_UP)
-                                            .multiply(BigDecimal.valueOf(100))).doubleValue(),
-                                    faturasFechadas.size(),
-                                    mediaMensalHistorica
-                            );
+                        String titulo;
+                        String mensagem;
+                        if (percentualDesvio > 15.0) {
+                            titulo = "Fatura Acima da Média";
+                            mensagem = String.format(
+                                    "A fatura do %s fechou em R$ %.2f — %.0f%% acima da sua média dos últimos %d meses (R$ %.2f).",
+                                    cartao.getNome(), valorFaturaFechada,
+                                    percentualDesvio, faturasFechadas.size(), mediaMensalHistorica);
+                        } else if (percentualDesvio < -15.0) {
+                            titulo = "Fatura Abaixo da Média";
+                            mensagem = String.format(
+                                    "Ótimo! A fatura do %s fechou em R$ %.2f — %.0f%% abaixo da sua média dos últimos %d meses (R$ %.2f). Continue assim!",
+                                    cartao.getNome(), valorFaturaFechada,
+                                    Math.abs(percentualDesvio), faturasFechadas.size(), mediaMensalHistorica);
+                        } else {
+                            // Dentro da faixa normal: não gerar insight (não é relevante)
+                            titulo = null;
+                            mensagem = null;
+                        }
+
+                        if (titulo != null) {
                             IaInsight insight = new IaInsight(
                                     usuario,
                                     TipoInsight.CARTAO_PREVISAO,
-                                    "Previsão de Fatura Acima do Histórico",
+                                    titulo,
                                     mensagem,
-                                    "{\"cartaoId\":\"" + cartao.getId() + "\",\"projetado\":" + fechamentoProjetado + ",\"mediaHistorica\":" + mediaMensalHistorica + ",\"mesesHistorico\":" + faturasFechadas.size() + "}"
+                                    "{\"cartaoId\":\"" + cartao.getId() + "\",\"realizado\":" + valorFaturaFechada + ",\"mediaHistorica\":" + mediaMensalHistorica + ",\"mesesHistorico\":" + faturasFechadas.size() + ",\"faturada\":true}"
                             );
                             iaInsightRepository.save(insight);
+                        }
+                    }
+
+                } else {
+                    // ── Caminho B: FATURA ABERTA — projeção de fechamento ─────────────────────
+                    // Só analisa a partir do dia 10 do mês (dados suficientes)
+                    long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
+                    if (diasPassados >= 10) {
+                        List<Transacao> transacoesMes = transacaoRepository
+                                .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
+                                .stream()
+                                .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
+                                .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
+                                .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
+                                .collect(Collectors.toList());
+
+                        BigDecimal totalGastosMes = transacoesMes.stream()
+                                .map(Transacao::getValor)
+                                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+                        if (totalGastosMes.compareTo(BigDecimal.ZERO) > 0) {
+                            BigDecimal mediaDiaria = totalGastosMes.divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP);
+                            BigDecimal fechamentoProjetado = mediaDiaria.multiply(BigDecimal.valueOf(hoje.lengthOfMonth())).setScale(2, RoundingMode.HALF_UP);
+                            BigDecimal limiarAlerta = mediaMensalHistorica.multiply(BigDecimal.valueOf(1.15)).setScale(2, RoundingMode.HALF_UP);
+
+                            if (fechamentoProjetado.compareTo(limiarAlerta) > 0) {
+                                double percentualAcima = ((fechamentoProjetado.subtract(mediaMensalHistorica))
+                                        .divide(mediaMensalHistorica, 4, RoundingMode.HALF_UP)
+                                        .multiply(BigDecimal.valueOf(100))).doubleValue();
+
+                                String mensagem = String.format(
+                                        "Neste ritmo, a fatura do %s fechará em R$ %.2f — %.0f%% acima da sua média dos últimos %d meses (R$ %.2f). Pise no freio.",
+                                        cartao.getNome(), fechamentoProjetado,
+                                        percentualAcima, faturasFechadas.size(), mediaMensalHistorica);
+
+                                IaInsight insight = new IaInsight(
+                                        usuario,
+                                        TipoInsight.CARTAO_PREVISAO,
+                                        "Previsão de Fatura Acima do Histórico",
+                                        mensagem,
+                                        "{\"cartaoId\":\"" + cartao.getId() + "\",\"projetado\":" + fechamentoProjetado + ",\"mediaHistorica\":" + mediaMensalHistorica + ",\"mesesHistorico\":" + faturasFechadas.size() + ",\"faturada\":false}"
+                                );
+                                iaInsightRepository.save(insight);
+                            }
                         }
                     }
                 }
