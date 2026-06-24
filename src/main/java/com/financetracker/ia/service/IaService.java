@@ -541,6 +541,46 @@ public class IaService {
                     }
                 }
             }
+
+            // ─── RN-15: ALERTA DE FECHAMENTO IMINENTE DE FATURA ──────────────────────────
+            LocalDate dataFechamentoAlerta = hoje.withDayOfMonth(diaFechamentoEfetivo);
+            if (hoje.isAfter(dataFechamentoAlerta)) {
+                LocalDate proximoMes = hoje.plusMonths(1);
+                int diaFechamentoEfetivoProximo = Math.min(diaFechamento, proximoMes.lengthOfMonth());
+                dataFechamentoAlerta = proximoMes.withDayOfMonth(diaFechamentoEfetivoProximo);
+            }
+
+            long diasParaFechamento = ChronoUnit.DAYS.between(hoje, dataFechamentoAlerta);
+            if (diasParaFechamento >= 0 && diasParaFechamento <= 2) {
+                boolean jaExiste = insightsExistentes.stream()
+                        .anyMatch(ins -> ins.getTipo() == TipoInsight.AVISO_FECHAMENTO
+                                && ins.getMetadados() != null
+                                && ins.getMetadados().contains(cartao.getId().toString()));
+
+                if (!jaExiste) {
+                    String titulo;
+                    String mensagem;
+                    if (diasParaFechamento == 0) {
+                        titulo = "Fatura Fecha Hoje";
+                        mensagem = String.format("Sua fatura do %s fecha hoje, recomendamos pausar gastos.", cartao.getNome());
+                    } else if (diasParaFechamento == 1) {
+                        titulo = "Fatura Fecha Amanhã";
+                        mensagem = String.format("Sua fatura do %s fecha amanhã, recomendamos pausar gastos.", cartao.getNome());
+                    } else {
+                        titulo = "Fatura Próxima de Fechar";
+                        mensagem = String.format("Sua fatura do %s está próxima de fechar, recomendamos pausar gastos.", cartao.getNome());
+                    }
+
+                    IaInsight insight = new IaInsight(
+                            usuario,
+                            TipoInsight.AVISO_FECHAMENTO,
+                            titulo,
+                            mensagem,
+                            "{\"cartaoId\":\"" + cartao.getId() + "\",\"diasParaFechamento\":" + diasParaFechamento + "}"
+                    );
+                    iaInsightRepository.save(insight);
+                }
+            }
         }
     }
 

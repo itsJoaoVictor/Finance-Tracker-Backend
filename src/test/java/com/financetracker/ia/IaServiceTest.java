@@ -13,6 +13,9 @@ import com.financetracker.ia.service.IaService;
 import com.financetracker.transacao.entity.Transacao;
 import com.financetracker.transacao.repository.TransacaoRepository;
 import com.financetracker.usuario.entity.Usuario;
+import com.financetracker.cartao.repository.CartaoRepository;
+import com.financetracker.transacao.repository.FaturaRepository;
+import com.financetracker.assinatura.repository.AssinaturaRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
@@ -47,6 +50,18 @@ public class IaServiceTest {
     @Mock
     private CategoriaRepository categoriaRepository;
 
+    @Mock
+    private CartaoRepository cartaoRepository;
+
+    @Mock
+    private FaturaRepository faturaRepository;
+
+    @Mock
+    private AssinaturaRepository assinaturaRepository;
+
+    @Mock
+    private ObjectMapper objectMapper;
+
     @BeforeEach
     public void setup() {
         MockitoAnnotations.openMocks(this);
@@ -77,5 +92,27 @@ public class IaServiceTest {
         assertEquals("Alimentação", res.get("categoriaSugerida"));
         assertEquals(catId, res.get("categoriaId"));
         verify(iaDicionarioCategoriaRepository, times(1)).findById("UBER *EATS");
+    }
+
+    @Test
+    public void deveGerarInsightAvisoFechamentoFaturaSeFaltaAte2Dias() {
+        Usuario usuario = new Usuario();
+        usuario.setId(UUID.randomUUID());
+
+        com.financetracker.cartao.entity.Cartao cartao = new com.financetracker.cartao.entity.Cartao();
+        cartao.setId(UUID.randomUUID());
+        cartao.setNome("Nubank");
+        // Se hoje é dia 24, e diaFechamento é 25, falta 1 dia (amanhã)
+        cartao.setDiaFechamento(java.time.LocalDate.now().plusDays(1).getDayOfMonth());
+        cartao.setAtivo(true);
+
+        when(cartaoRepository.findByUsuarioIdAndAtivoTrue(usuario.getId()))
+                .thenReturn(java.util.List.of(cartao));
+        when(iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuario.getId()))
+                .thenReturn(java.util.Collections.emptyList());
+
+        iaService.processarInsightsCartaoParaUsuario(usuario);
+
+        verify(iaInsightRepository, times(1)).save(any(IaInsight.class));
     }
 }
