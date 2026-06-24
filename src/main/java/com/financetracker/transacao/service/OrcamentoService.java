@@ -61,18 +61,47 @@ public class OrcamentoService {
         Categoria categoria = findCategoriaDoUsuario(request.categoriaId(), usuario.getId());
 
         OrcamentoCategoria orcamento = orcamentoRepository
-                .findByUsuarioIdAndCategoriaIdAndMesReferencia(
-                        usuario.getId(), categoria.getId(), request.mesReferencia())
+                .findByUsuarioIdAndCategoriaId(usuario.getId(), categoria.getId())
                 .orElseGet(() -> {
                     OrcamentoCategoria novo = new OrcamentoCategoria();
                     novo.setUsuario(usuario);
                     novo.setCategoria(categoria);
-                    novo.setMesReferencia(request.mesReferencia());
                     return novo;
                 });
 
         orcamento.setLimiteMensal(request.limiteMensal());
         return new OrcamentoResponse(orcamentoRepository.save(orcamento));
+    }
+
+    @Transactional
+    public OrcamentoResponse editar(UUID orcamentoId, OrcamentoCriacaoRequest request) {
+        Usuario usuario = getAuthenticatedUsuario();
+        OrcamentoCategoria orcamento = orcamentoRepository
+                .findById(orcamentoId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Orçamento não encontrado."));
+
+        if (!orcamento.getUsuario().getId().equals(usuario.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Sem permissão.");
+        }
+
+        Categoria categoria = findCategoriaDoUsuario(request.categoriaId(), usuario.getId());
+        orcamento.setCategoria(categoria);
+        orcamento.setLimiteMensal(request.limiteMensal());
+        return new OrcamentoResponse(orcamentoRepository.save(orcamento));
+    }
+
+    @Transactional
+    public void excluir(UUID orcamentoId) {
+        Usuario usuario = getAuthenticatedUsuario();
+        OrcamentoCategoria orcamento = orcamentoRepository
+                .findById(orcamentoId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Orçamento não encontrado."));
+
+        if (!orcamento.getUsuario().getId().equals(usuario.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Sem permissão.");
+        }
+
+        orcamentoRepository.delete(orcamento);
     }
 
     @Transactional(readOnly = true)
@@ -81,14 +110,17 @@ public class OrcamentoService {
         LocalDate inicioMes = LocalDate.now().withDayOfMonth(1);
         LocalDate fimMes = inicioMes.plusMonths(1).minusDays(1);
 
+        // Busca TODOS os orçamentos do usuário (agora são globais, não por mês)
         List<OrcamentoCategoria> orcamentos = orcamentoRepository
-                .findByUsuarioIdAndMesReferencia(usuario.getId(), inicioMes);
+                .findByUsuarioId(usuario.getId());
 
         return orcamentos.stream().map(o -> {
+            // O progresso/gasto é sempre calculado no mês de referência atual
             BigDecimal totalGasto = transacaoRepository.sumValorByCategoriaAndPeriodo(
                     usuario.getId(), o.getCategoria().getId(), inicioMes, fimMes,
                     List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO));
             return new OrcamentoResumoResponse(
+                    o.getId(),
                     o.getCategoria().getId(),
                     o.getCategoria().getNome(),
                     o.getLimiteMensal(),

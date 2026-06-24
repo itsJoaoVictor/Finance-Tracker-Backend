@@ -125,7 +125,7 @@ public class TransacaoService {
 
         LocalDate inicioMes = LocalDate.now().withDayOfMonth(1);
         OrcamentoCategoria orcamento = orcamentoRepository
-                .findByUsuarioIdAndCategoriaIdAndMesReferencia(usuarioId, categoriaId, inicioMes)
+                .findByUsuarioIdAndCategoriaId(usuarioId, categoriaId)
                 .orElse(null);
         if (orcamento == null || orcamento.getLimiteMensal() == null) return null;
 

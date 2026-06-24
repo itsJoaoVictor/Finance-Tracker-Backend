@@ -4,12 +4,11 @@ import com.financetracker.categoria.entity.Categoria;
 import com.financetracker.usuario.entity.Usuario;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.UUID;
 
 @Entity
 @Table(name = "orcamentos_categorias", uniqueConstraints = {
-    @UniqueConstraint(columnNames = {"usuario_id", "categoria_id", "mes_referencia"})
+    @UniqueConstraint(columnNames = {"usuario_id", "categoria_id"})
 })
 public class OrcamentoCategoria {
 
@@ -28,9 +27,6 @@ public class OrcamentoCategoria {
     @Column(name = "limite_mensal", precision = 15, scale = 2)
     private BigDecimal limiteMensal;
 
-    @Column(name = "mes_referencia", nullable = false)
-    private LocalDate mesReferencia;
-
     public OrcamentoCategoria() {}
 
     public UUID getId() { return id; }
@@ -41,6 +37,4 @@ public class OrcamentoCategoria {
     public void setCategoria(Categoria categoria) { this.categoria = categoria; }
     public BigDecimal getLimiteMensal() { return limiteMensal; }
     public void setLimiteMensal(BigDecimal limiteMensal) { this.limiteMensal = limiteMensal; }
-    public LocalDate getMesReferencia() { return mesReferencia; }
-    public void setMesReferencia(LocalDate mesReferencia) { this.mesReferencia = mesReferencia; }
 }

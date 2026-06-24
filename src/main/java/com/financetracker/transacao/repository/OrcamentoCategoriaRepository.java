@@ -4,7 +4,6 @@ import com.financetracker.transacao.entity.OrcamentoCategoria;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -12,8 +11,7 @@ import java.util.UUID;
 @Repository
 public interface OrcamentoCategoriaRepository extends JpaRepository<OrcamentoCategoria, UUID> {
 
-    Optional<OrcamentoCategoria> findByUsuarioIdAndCategoriaIdAndMesReferencia(
-        UUID usuarioId, UUID categoriaId, LocalDate mesReferencia);
+    Optional<OrcamentoCategoria> findByUsuarioIdAndCategoriaId(UUID usuarioId, UUID categoriaId);
 
-    List<OrcamentoCategoria> findByUsuarioIdAndMesReferencia(UUID usuarioId, LocalDate mesReferencia);
+    List<OrcamentoCategoria> findByUsuarioId(UUID usuarioId);
 }
