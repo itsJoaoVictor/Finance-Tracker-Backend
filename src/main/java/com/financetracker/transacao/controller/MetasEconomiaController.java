@@ -1,6 +1,8 @@
 package com.financetracker.transacao.controller;
 
 import com.financetracker.transacao.dto.MetaEconomiaCriacaoRequest;
+import com.financetracker.transacao.dto.MetaEconomiaDepositoRequest;
+import com.financetracker.transacao.dto.MetaEconomiaResgateRequest;
 import com.financetracker.transacao.dto.MetaEconomiaResponse;
 import com.financetracker.transacao.service.MetasEconomiaService;
 import jakarta.validation.Valid;
@@ -24,6 +26,20 @@ public class MetasEconomiaController {
     @PostMapping
     public ResponseEntity<MetaEconomiaResponse> criar(@Valid @RequestBody MetaEconomiaCriacaoRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED).body(metasService.criar(request));
+    }
+
+    @PostMapping("/{id}/deposito")
+    public ResponseEntity<MetaEconomiaResponse> depositar(
+            @PathVariable UUID id,
+            @Valid @RequestBody MetaEconomiaDepositoRequest request) {
+        return ResponseEntity.ok(metasService.depositar(id, request));
+    }
+
+    @PostMapping("/{id}/resgate")
+    public ResponseEntity<MetaEconomiaResponse> resgatar(
+            @PathVariable UUID id,
+            @Valid @RequestBody MetaEconomiaResgateRequest request) {
+        return ResponseEntity.ok(metasService.resgatar(id, request));
     }
 
     @GetMapping

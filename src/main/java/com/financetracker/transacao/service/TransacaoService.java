@@ -585,6 +585,11 @@ public class TransacaoService {
 
         switch (transacao.getTipo()) {
             case DEPOSITO -> {
+                if (transacao.getMetaOrigem() != null) {
+                    MetasEconomia meta = transacao.getMetaOrigem();
+                    meta.setValorAcumulado(meta.getValorAcumulado().add(valorEstorno));
+                    metasRepository.save(meta);
+                }
                 Conta conta = transacao.getContaDestino();
                 conta.setSaldo(conta.getSaldo().subtract(valorEstorno));
                 contaRepository.save(conta);
@@ -727,6 +732,11 @@ public class TransacaoService {
     private void reverterImpacto(Transacao t, Usuario usuario) {
         switch (t.getTipo()) {
             case DEPOSITO -> {
+                if (t.getMetaOrigem() != null) {
+                    MetasEconomia meta = t.getMetaOrigem();
+                    meta.setValorAcumulado(meta.getValorAcumulado().add(t.getValor()));
+                    metasRepository.save(meta);
+                }
                 Conta c = t.getContaDestino();
                 c.setSaldo(c.getSaldo().subtract(t.getValor()));
                 contaRepository.save(c);
