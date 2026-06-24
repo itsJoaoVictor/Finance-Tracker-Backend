@@ -188,6 +188,33 @@ public class TransacaoControllerTest {
         Cartao cartaoPosTransacao = cartaoRepository.findById(cartaoValido.getId()).orElseThrow();
         assertEquals(0, BigDecimal.valueOf(300.00).compareTo(cartaoPosTransacao.getLimiteDisponivel()), 
                 "O limite disponível do cartão deve ser de 300.00 devido à liberação das 3 parcelas históricas.");
+
+        // Validar Resumo dos Cartões (Fatura Estimada)
+        // Fatura Estimada deve ser apenas o valor da fatura atual aberta (Julho - 100.00)
+        // E NÃO o limite consumido total de 700.00 nem somar a fatura fechada de Junho (100.00)
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/cartoes/resumo")
+                        .header("Authorization", "Bearer " + tokenLogado))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.totalFaturaEstimada").value(100.00));
+
+        // Validar a listagem de faturas por cartão
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/cartoes/" + cartaoValido.getId() + "/faturas")
+                        .header("Authorization", "Bearer " + tokenLogado))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.length()").value(10));
+
+        // Obter ID da fatura de Março para testar os itens
+        Fatura faturaMarço = faturas.stream()
+                .filter(f -> f.getMesReferencia().equals(LocalDate.of(2026, 3, 1)))
+                .findFirst().orElseThrow();
+
+        // Validar a busca de transações (itens) de uma fatura
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/transacoes/fatura/" + faturaMarço.getId())
+                        .header("Authorization", "Bearer " + tokenLogado))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.length()").value(1))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$[0].descricao").value("Compra Retroativa Parcelada"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$[0].numeroParcela").value(1));
     }
 
     @Test

@@ -43,6 +43,7 @@ public class TransacaoService {
     private final CartaoRepository cartaoRepository;
     private final CategoriaRepository categoriaRepository;
     private final UsuarioRepository usuarioRepository;
+    private final com.financetracker.ia.service.IaService iaService;
 
     public TransacaoService(TransacaoRepository transacaoRepository,
                             FaturaRepository faturaRepository,
@@ -53,7 +54,8 @@ public class TransacaoService {
                             ContaRepository contaRepository,
                             CartaoRepository cartaoRepository,
                             CategoriaRepository categoriaRepository,
-                            UsuarioRepository usuarioRepository) {
+                            UsuarioRepository usuarioRepository,
+                            com.financetracker.ia.service.IaService iaService) {
         this.transacaoRepository = transacaoRepository;
         this.faturaRepository = faturaRepository;
         this.metasRepository = metasRepository;
@@ -64,6 +66,7 @@ public class TransacaoService {
         this.cartaoRepository = cartaoRepository;
         this.categoriaRepository = categoriaRepository;
         this.usuarioRepository = usuarioRepository;
+        this.iaService = iaService;
     }
 
     private Usuario getAuthenticatedUsuario() {
@@ -341,6 +344,9 @@ public class TransacaoService {
                 cartaoRepository.save(cartao);
 
                 TransacaoResponse response = new TransacaoResponse(primeiraTransacao);
+                try {
+                    iaService.analisarNovaTransacao(primeiraTransacao);
+                } catch (Exception ignored) {}
                 TransacaoResponse.AlertaOrcamento alerta = calcularAlertaOrcamento(
                         usuario.getId(), categoria.getId(), request.valor(), tipo);
                 return alerta != null ? response.withAlerta(alerta) : response;
@@ -371,6 +377,9 @@ public class TransacaoService {
         transacao.setEstornada(false);
 
         Transacao saved = transacaoRepository.save(transacao);
+        try {
+            iaService.analisarNovaTransacao(saved);
+        } catch (Exception ignored) {}
         TransacaoResponse response = new TransacaoResponse(saved);
 
         // RN-13 — Alerta de Orçamento
@@ -447,37 +456,51 @@ public class TransacaoService {
 
         switch (tipoPagamento) {
             case TOTAL -> {
-                // RN-08.1 — Pagamento Total: fatura deve estar FECHADA
-                if (fatura.getStatus() != StatusFatura.FECHADA) {
-                    throw new PagamentoFaturaInvalidoException("Pagamento total só pode ser realizado em faturas fechadas.");
+                // RN-08.1 — Pagamento Total: fatura deve estar FECHADA ou ATRASADA
+                if (fatura.getStatus() != StatusFatura.FECHADA && fatura.getStatus() != StatusFatura.ATRASADA) {
+                    throw new PagamentoFaturaInvalidoException("Pagamento total só pode ser realizado em faturas fechadas ou atrasadas.");
                 }
-                if (LocalDate.now().isAfter(fatura.getDataVencimento())) {
-                    throw new PagamentoFaturaInvalidoException("Pagamento total deve ser realizado até o vencimento.");
+
+                // Se a fatura estiver ATRASADA e já foi feito o rollover, não é permitido pagar diretamente
+                if (fatura.getStatus() == StatusFatura.ATRASADA && fatura.isRolladoOver()) {
+                    throw new PagamentoFaturaInvalidoException("Esta fatura foi transferida para a próxima. Pague a fatura do mês seguinte.");
                 }
-                if (conta.getSaldo().compareTo(fatura.getValorTotal()) < 0) {
+
+                BigDecimal valorReal = fatura.getValorTotal().subtract(fatura.getValorPago());
+                if (valorReal.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new PagamentoFaturaInvalidoException("Esta fatura já foi totalmente paga.");
+                }
+                if (conta.getSaldo().compareTo(valorReal) < 0) {
                     throw new SaldoInsuficienteException("Saldo insuficiente para pagar a fatura.");
                 }
 
-                conta.setSaldo(conta.getSaldo().subtract(fatura.getValorTotal()));
+                conta.setSaldo(conta.getSaldo().subtract(valorReal));
                 contaRepository.save(conta);
 
-                // Restabelece limite do cartão: devolve o valor que está sendo pago
-                cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(fatura.getValorTotal()));
+                // Restabelece limite do cartão: devolve o valor real sendo pago
+                cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(valorReal));
                 cartaoRepository.save(cartao);
 
                 fatura.setValorPago(fatura.getValorTotal());
                 fatura.setStatus(StatusFatura.PAGA);
                 faturaRepository.save(fatura);
+
+                // Usa o valor real pago para criar a transação
+                valor = valorReal;
             }
             case PARCIAL -> {
                 // RN-08.3 — Pagamento Parcial
-                if (fatura.getStatus() != StatusFatura.FECHADA) {
-                    throw new PagamentoFaturaInvalidoException("Pagamento parcial só pode ser realizado em faturas fechadas.");
+                if (fatura.getStatus() != StatusFatura.FECHADA && fatura.getStatus() != StatusFatura.ATRASADA) {
+                    throw new PagamentoFaturaInvalidoException("Pagamento parcial só pode ser realizado em faturas fechadas ou atrasadas.");
                 }
-                if (LocalDate.now().isAfter(fatura.getDataVencimento())) {
-                    throw new PagamentoFaturaInvalidoException("Pagamento parcial deve ser realizado até o vencimento.");
+
+                // Se a fatura estiver ATRASADA e já foi feito o rollover, não é permitido pagar diretamente
+                if (fatura.getStatus() == StatusFatura.ATRASADA && fatura.isRolladoOver()) {
+                    throw new PagamentoFaturaInvalidoException("Esta fatura foi transferida para a próxima. Pague a fatura do mês seguinte.");
                 }
-                if (valor.compareTo(fatura.getValorTotal().subtract(fatura.getValorPago())) > 0) {
+
+                BigDecimal restanteReal = fatura.getValorTotal().subtract(fatura.getValorPago());
+                if (valor.compareTo(restanteReal) > 0) {
                     throw new PagamentoFaturaInvalidoException("Valor do pagamento excede o saldo devedor da fatura.");
                 }
                 if (conta.getSaldo().compareTo(valor) < 0) {
@@ -521,7 +544,6 @@ public class TransacaoService {
                 if (fatura.getValorTotal().compareTo(BigDecimal.ZERO) < 0) {
                     fatura.setValorTotal(BigDecimal.ZERO);
                 }
-                fatura.setValorPago(fatura.getValorPago().add(valor));
                 faturaRepository.save(fatura);
             }
         }
@@ -529,7 +551,13 @@ public class TransacaoService {
         // Criar transação de pagamento
         Transacao transacao = new Transacao();
         transacao.setUsuario(usuario);
-        transacao.setDescricao("Pagamento de Fatura - " + fatura.getMesReferencia());
+        
+        String prefixo = switch (tipoPagamento) {
+            case TOTAL -> "Pagamento Total de Fatura - ";
+            case PARCIAL -> "Pagamento Parcial de Fatura - ";
+            case ANTECIPADO -> "Pagamento Antecipado Fatura - ";
+        };
+        transacao.setDescricao(prefixo + fatura.getMesReferencia());
         transacao.setValor(valor);
         transacao.setTipo(TipoTransacao.PAGAMENTO_CREDITO);
         transacao.setContaOrigem(conta);
@@ -541,7 +569,6 @@ public class TransacaoService {
 
         return new TransacaoResponse(transacaoRepository.save(transacao));
     }
-
     // ── Estorno (POST /api/transacoes/{id}/estornar) ────────────
 
     @Transactional
@@ -805,5 +832,16 @@ public class TransacaoService {
                 new ProjecaoResponse(hoje, saldoAtual),
                 new ProjecaoResponse(dataLimite, saldoProjetado)
         );
+    }
+
+    @Transactional(readOnly = true)
+    public List<TransacaoResponse> buscarPorFatura(UUID faturaId) {
+        Usuario usuario = getAuthenticatedUsuario();
+        Fatura fatura = findFaturaDoUsuario(faturaId, usuario.getId());
+
+        return transacaoRepository.findByFaturaIdAndAtivoTrue(fatura.getId())
+                .stream()
+                .map(TransacaoResponse::new)
+                .toList();
     }
 }

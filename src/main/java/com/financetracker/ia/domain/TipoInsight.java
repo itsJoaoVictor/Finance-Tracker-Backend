@@ -1,0 +1,13 @@
+package com.financetracker.ia.domain;
+
+public enum TipoInsight {
+    CARTAO_PREVISAO,
+    COBRANCA_DUPLICADA,
+    PROJECAO_PARCELAS,
+    MELHOR_CARTAO,
+    FADIGA_ASSINATURA,
+    REAJUSTE_SILENCIOSO,
+    ASSINATURA_ESQUECIDA,
+    SUGESTAO_VENCIMENTO,
+    ESTOURO_FATURA
+}

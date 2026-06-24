@@ -21,6 +21,7 @@ public record TransacaoResponse(
     UUID cartaoId,
     UUID faturaId,
     UUID categoriaId,
+    String categoriaNome,
     LocalDate data,
     Integer numeroParcela,
     Integer totalParcelas,
@@ -39,6 +40,7 @@ public record TransacaoResponse(
              t.getCartao() != null ? t.getCartao().getId() : null,
              t.getFatura() != null ? t.getFatura().getId() : null,
              t.getCategoria() != null ? t.getCategoria().getId() : null,
+             t.getCategoria() != null ? t.getCategoria().getNome() : null,
              t.getData(), t.getNumeroParcela(), t.getTotalParcelas(),
              t.getTipoPagamentoFatura(), t.getEstornada(), null, null, t.getCriadoEm());
     }
@@ -46,14 +48,14 @@ public record TransacaoResponse(
     public TransacaoResponse withAlerta(AlertaOrcamento alerta) {
         return new TransacaoResponse(id, descricao, valor, tipo, contaOrigemId, contaDestinoId,
             contaOrigemNome, contaDestinoNome,
-            cartaoId, faturaId, categoriaId, data, numeroParcela, totalParcelas,
+            cartaoId, faturaId, categoriaId, categoriaNome, data, numeroParcela, totalParcelas,
             tipoPagamentoFatura, estornada, tagIds, alerta, criadoEm);
     }
 
     public TransacaoResponse withTags(List<UUID> tagIds) {
         return new TransacaoResponse(id, descricao, valor, tipo, contaOrigemId, contaDestinoId,
             contaOrigemNome, contaDestinoNome,
-            cartaoId, faturaId, categoriaId, data, numeroParcela, totalParcelas,
+            cartaoId, faturaId, categoriaId, categoriaNome, data, numeroParcela, totalParcelas,
             tipoPagamentoFatura, estornada, tagIds, alertaOrcamento, criadoEm);
     }
 

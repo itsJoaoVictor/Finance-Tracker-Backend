@@ -77,13 +77,8 @@ public class AssinaturaService {
         return categoria;
     }
 
-    // RN-04 — Cálculo da data da próxima cobrança
-    private LocalDate calcularProximaCobranca(Assinatura a) {
-        LocalDate base = a.getDataProximaCobranca() != null
-                ? a.getDataProximaCobranca()
-                : a.getDataInicio();
+    private LocalDate avancarCobranca(Assinatura a, LocalDate base) {
         LocalDate proxima;
-
         switch (a.getTipoRecorrencia()) {
             case MENSAL -> proxima = base.plusMonths(1);
             case TRIMESTRAL -> proxima = base.plusMonths(3);
@@ -101,14 +96,17 @@ public class AssinaturaService {
             default -> throw new FrequenciaInvalidaException("Tipo de recorrência inválido.");
         }
 
-        // Ajuste de fim de mês (ex: dia 31 em fevereiro)
         int diaCobranca = a.getDiaCobranca();
         int maxDia = proxima.lengthOfMonth();
-        if (diaCobranca > maxDia) {
-            proxima = proxima.withDayOfMonth(maxDia);
-        }
+        return proxima.withDayOfMonth(Math.min(diaCobranca, maxDia));
+    }
 
-        return proxima;
+    // RN-04 — Cálculo da data da próxima cobrança
+    private LocalDate calcularProximaCobranca(Assinatura a) {
+        LocalDate base = a.getDataProximaCobranca() != null
+                ? a.getDataProximaCobranca()
+                : a.getDataInicio();
+        return avancarCobranca(a, base);
     }
 
     // RN-01 — Anti-IDOR: buscar assinatura do usuário
@@ -157,7 +155,9 @@ public class AssinaturaService {
 
         assinatura.setAtivo(request.ativo() != null ? request.ativo() : true);
 
-        return new AssinaturaResponse(assinaturaRepository.save(assinatura));
+        Assinatura saved = assinaturaRepository.save(assinatura);
+        processarCobrancasPendentes();
+        return new AssinaturaResponse(saved);
     }
 
     @Transactional(readOnly = true)
@@ -199,11 +199,21 @@ public class AssinaturaService {
         assinatura.setDataInicio(request.dataInicio());
         assinatura.setAtivo(request.ativo() != null ? request.ativo() : assinatura.getAtivo());
 
-        // RN-07 — Edição afeta apenas lançamentos futuros
-        // Recalcular data_proxima_cobranca se alterou parâmetros
-        assinatura.setDataProximaCobranca(calcularNovaProximaCobranca(assinatura));
+        // Calcular a primeira cobrança com base nos novos parâmetros
+        int maxDia = request.dataInicio().lengthOfMonth();
+        int dia = Math.min(request.diaCobranca(), maxDia);
+        LocalDate primeiraCobranca = request.dataInicio().withDayOfMonth(dia);
+        if (primeiraCobranca.isBefore(request.dataInicio())) {
+            primeiraCobranca = primeiraCobranca.plusMonths(1);
+            int maxDiaProx = primeiraCobranca.lengthOfMonth();
+            primeiraCobranca = primeiraCobranca.withDayOfMonth(Math.min(request.diaCobranca(), maxDiaProx));
+        }
+        assinatura.setDataProximaCobranca(primeiraCobranca);
 
-        return new AssinaturaResponse(assinaturaRepository.save(assinatura));
+        Assinatura saved = assinaturaRepository.save(assinatura);
+        processarCobrancasPendentes();
+
+        return new AssinaturaResponse(saved);
     }
 
     private LocalDate calcularNovaProximaCobranca(Assinatura a) {
@@ -211,9 +221,7 @@ public class AssinaturaService {
         int dia = Math.min(a.getDiaCobranca(), maxDia);
         LocalDate proxima = a.getDataInicio().withDayOfMonth(dia);
         while (!proxima.isAfter(LocalDate.now())) {
-            proxima = proxima.plusMonths(1);
-            int maxDiaProx = proxima.lengthOfMonth();
-            proxima = proxima.withDayOfMonth(Math.min(a.getDiaCobranca(), maxDiaProx));
+            proxima = avancarCobranca(a, proxima);
         }
         return proxima;
     }
@@ -256,6 +264,7 @@ public class AssinaturaService {
         // Recalcular próxima cobrança
         assinatura.setDataProximaCobranca(calcularNovaProximaCobranca(assinatura));
         assinaturaRepository.save(assinatura);
+        processarCobrancasPendentes();
     }
 
     @Transactional(readOnly = true)
@@ -278,6 +287,57 @@ public class AssinaturaService {
 
     // ── Scheduler: processar cobranças pendentes (RN-03) ────────
 
+    private LocalDate calcularMesReferenciaFatura(Cartao cartao, LocalDate data) {
+        int diaFechamento = cartao.getDiaFechamento();
+        if (data.getDayOfMonth() < diaFechamento) {
+            return data.withDayOfMonth(1);
+        } else {
+            return data.plusMonths(1).withDayOfMonth(1);
+        }
+    }
+
+    private Fatura getOrCreateFatura(Cartao cartao, Usuario usuario, LocalDate mesReferencia) {
+        Optional<Fatura> existente = faturaRepository
+                .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuario.getId(), mesReferencia);
+        if (existente.isPresent()) {
+            return existente.get();
+        }
+
+        int diaFechamento = cartao.getDiaFechamento();
+        int diaVencimento = cartao.getDiaVencimento();
+
+        LocalDate dataFechamento = mesReferencia.withDayOfMonth(diaFechamento);
+        LocalDate dataVencimento = mesReferencia.withDayOfMonth(diaVencimento);
+        if (dataVencimento.isBefore(dataFechamento)) {
+            dataVencimento = dataVencimento.plusMonths(1);
+        }
+
+        Fatura fatura = new Fatura();
+        fatura.setUsuario(usuario);
+        fatura.setCartao(cartao);
+        fatura.setMesReferencia(mesReferencia);
+        fatura.setDataFechamento(dataFechamento);
+        fatura.setDataVencimento(dataVencimento);
+        fatura.setValorTotal(BigDecimal.ZERO);
+        fatura.setValorPago(BigDecimal.ZERO);
+
+        LocalDate dataCriacaoUsuario = usuario.getCriadoEm().toLocalDate();
+        if (dataVencimento.isBefore(dataCriacaoUsuario)) {
+            fatura.setStatus(StatusFatura.PAGA);
+        } else {
+            LocalDate hoje = LocalDate.now();
+            if (hoje.isAfter(dataFechamento) || hoje.isEqual(dataFechamento)) {
+                fatura.setStatus(StatusFatura.FECHADA);
+            } else {
+                fatura.setStatus(StatusFatura.ABERTA);
+            }
+        }
+
+        return faturaRepository.save(fatura);
+    }
+
+    // ── Scheduler: processar cobranças pendentes (RN-03) ────────
+
     @Transactional
     public void processarCobrancasPendentes() {
         LocalDate hoje = LocalDate.now();
@@ -289,48 +349,54 @@ public class AssinaturaService {
                 Usuario usuario = a.getUsuario();
                 Cartao cartao = a.getCartao();
 
-                // RN-03.2 — Verificar se fatura atual já foi paga
-                Optional<Fatura> faturaAberta = faturaRepository
-                        .findByCartaoIdAndStatusAndUsuarioId(cartao.getId(), StatusFatura.ABERTA, usuario.getId());
+                // Processar todas as cobranças passadas e atuais acumuladas
+                while (a.getDataProximaCobranca().isBefore(hoje) || a.getDataProximaCobranca().isEqual(hoje)) {
+                    // Determina o mês de referência com base na data da cobrança
+                    LocalDate mesReferencia = calcularMesReferenciaFatura(cartao, a.getDataProximaCobranca());
+                    Fatura fatura = getOrCreateFatura(cartao, usuario, mesReferencia);
 
-                // RN-03.5 — Prevenir duplicidade
-                List<Transacao> transacoes = transacaoRepository
-                        .findByFaturaIdAndAtivoTrue(
-                                faturaAberta.map(Fatura::getId).orElse(null));
-                boolean jaCobrada = transacoes.stream()
-                        .anyMatch(t -> t.getDescricao() != null
-                                && t.getDescricao().contains(a.getNome())
-                                && t.getData().equals(a.getDataProximaCobranca()));
-                if (jaCobrada) continue;
+                    // RN-03.5 — Prevenir duplicidade na fatura correspondente
+                    List<Transacao> transacoes = transacaoRepository
+                            .findByFaturaIdAndAtivoTrue(fatura.getId());
+                    boolean jaCobrada = transacoes.stream()
+                            .anyMatch(t -> t.getDescricao() != null
+                                    && t.getDescricao().contains(a.getNome())
+                                    && t.getData().equals(a.getDataProximaCobranca()));
 
-                // Criar a transação da assinatura
-                Transacao transacao = new Transacao();
-                transacao.setUsuario(usuario);
-                transacao.setDescricao("Assinatura: " + a.getNome());
-                transacao.setValor(a.getValor());
-                transacao.setTipo(TipoTransacao.COMPRA_CREDITO);
-                transacao.setCartao(cartao);
-                transacao.setCategoria(a.getCategoria());
-                transacao.setData(a.getDataProximaCobranca());
-                transacao.setAtivo(true);
-                transacao.setEstornada(false);
+                    if (!jaCobrada) {
+                        // Criar a transação da assinatura
+                        Transacao transacao = new Transacao();
+                        transacao.setUsuario(usuario);
+                        transacao.setDescricao("Assinatura: " + a.getNome());
+                        transacao.setValor(a.getValor());
+                        transacao.setTipo(TipoTransacao.COMPRA_CREDITO);
+                        transacao.setCartao(cartao);
+                        transacao.setFatura(fatura);
+                        transacao.setCategoria(a.getCategoria());
+                        transacao.setData(a.getDataProximaCobranca());
+                        transacao.setAtivo(true);
+                        transacao.setEstornada(false);
 
-                if (faturaAberta.isPresent()) {
-                    Fatura fatura = faturaAberta.get();
-                    transacao.setFatura(fatura);
-                    fatura.setValorTotal(fatura.getValorTotal().add(a.getValor()));
-                    faturaRepository.save(fatura);
+                        // Atualizar o valor total da fatura
+                        fatura.setValorTotal(fatura.getValorTotal().add(a.getValor()));
+                        if (fatura.getStatus() == StatusFatura.PAGA) {
+                            fatura.setValorPago(fatura.getValorTotal());
+                            // Recompor o limite do cartão imediatamente se for uma fatura histórica já paga
+                            cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(a.getValor()));
+                        }
+                        faturaRepository.save(fatura);
+
+                        // RN-05 — Consumir limite do cartão (mesmo que fique negativo, gerar alerta)
+                        cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().subtract(a.getValor()));
+                        cartaoRepository.save(cartao);
+
+                        transacaoRepository.save(transacao);
+                    }
+
+                    // Avançar data_proxima_cobranca
+                    a.setDataProximaCobranca(calcularProximaCobranca(a));
+                    assinaturaRepository.save(a);
                 }
-
-                // RN-05 — Consumir limite do cartão (mesmo que fique negativo, gerar alerta)
-                cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().subtract(a.getValor()));
-                cartaoRepository.save(cartao);
-
-                transacaoRepository.save(transacao);
-
-                // Avançar data_proxima_cobranca
-                a.setDataProximaCobranca(calcularProximaCobranca(a));
-                assinaturaRepository.save(a);
 
             } catch (Exception e) {
                 // Log error but continue processing other subscriptions

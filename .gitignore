@@ -67,4 +67,5 @@ sys.dmp
 *.stackdump
 
 Contexto/
+seed_clean_profile.py
 

@@ -16,4 +16,15 @@ public class AssinaturaScheduler {
     public void processarCobrancas() {
         assinaturaService.processarCobrancasPendentes();
     }
+
+    @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        System.out.println("Starting startup processing of pending subscription charges...");
+        try {
+            assinaturaService.processarCobrancasPendentes();
+            System.out.println("Finished startup processing of pending subscription charges.");
+        } catch (Exception e) {
+            System.err.println("Error during startup processing of pending subscription charges: " + e.getMessage());
+        }
+    }
 }

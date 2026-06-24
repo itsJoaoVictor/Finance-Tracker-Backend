@@ -2,6 +2,7 @@ package com.financetracker.cartao.controller;
 
 import com.financetracker.cartao.dto.*;
 import com.financetracker.cartao.service.CartaoService;
+import com.financetracker.transacao.dto.FaturaResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -34,6 +35,11 @@ public class CartaoController {
     @GetMapping("/resumo")
     public ResponseEntity<CartaoResumoResponse> resumo() {
         return ResponseEntity.ok(cartaoService.resumo());
+    }
+
+    @GetMapping("/{id}/faturas")
+    public ResponseEntity<List<FaturaResponse>> faturas(@PathVariable UUID id) {
+        return ResponseEntity.ok(cartaoService.listarFaturas(id));
     }
 
     @GetMapping("/{id}")

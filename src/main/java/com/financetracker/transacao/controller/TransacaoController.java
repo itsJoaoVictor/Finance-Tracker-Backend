@@ -49,6 +49,11 @@ public class TransacaoController {
         return ResponseEntity.ok(transacaoService.estornar(id, request));
     }
 
+    @GetMapping("/fatura/{faturaId}")
+    public ResponseEntity<List<TransacaoResponse>> listarPorFatura(@PathVariable UUID faturaId) {
+        return ResponseEntity.ok(transacaoService.buscarPorFatura(faturaId));
+    }
+
     @GetMapping
     public ResponseEntity<Page<TransacaoResponse>> listar(
             @RequestParam(required = false) String tipo,

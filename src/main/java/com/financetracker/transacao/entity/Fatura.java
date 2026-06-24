@@ -44,6 +44,10 @@ public class Fatura {
     @Column(nullable = false, length = 30)
     private StatusFatura status;
 
+    @Column(name = "rollado_over", nullable = false, columnDefinition = "boolean default false")
+    private boolean rolladoOver = false;
+
+
     @Column(name = "criado_em", updatable = false)
     private LocalDateTime criadoEm = LocalDateTime.now();
 
@@ -67,5 +71,7 @@ public class Fatura {
     public void setValorPago(BigDecimal valorPago) { this.valorPago = valorPago; }
     public StatusFatura getStatus() { return status; }
     public void setStatus(StatusFatura status) { this.status = status; }
+    public boolean isRolladoOver() { return rolladoOver; }
+    public void setRolladoOver(boolean rolladoOver) { this.rolladoOver = rolladoOver; }
     public LocalDateTime getCriadoEm() { return criadoEm; }
 }

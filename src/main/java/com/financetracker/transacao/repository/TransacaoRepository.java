@@ -19,6 +19,7 @@ import java.util.UUID;
 public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
 
     @Query("SELECT t FROM Transacao t WHERE t.usuario.id = :usuarioId AND t.ativo = true " +
+           "AND (t.numeroParcela IS NULL OR t.numeroParcela = 1) " +
            "AND t.tipo IN (:tipos) " +
            "AND (LOWER(t.descricao) LIKE LOWER(:descricaoPattern)) " +
            "AND t.data >= :dataInicio " +
@@ -33,7 +34,10 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
         Pageable pageable
     );
 
-    List<Transacao> findByUsuarioIdAndAtivoTrueOrderByDataDesc(UUID usuarioId);
+    @Query("SELECT t FROM Transacao t WHERE t.usuario.id = :usuarioId AND t.ativo = true " +
+           "AND (t.numeroParcela IS NULL OR t.numeroParcela = 1) " +
+           "ORDER BY t.data DESC, t.criadoEm DESC")
+    List<Transacao> findByUsuarioIdAndAtivoTrueOrderByDataDesc(@Param("usuarioId") UUID usuarioId);
 
     Optional<Transacao> findByIdAndUsuarioIdAndAtivoTrue(UUID id, UUID usuarioId);
 

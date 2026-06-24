@@ -7,6 +7,13 @@ import com.financetracker.cartao.repository.CartaoRepository;
 import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.repository.ContaRepository;
+import com.financetracker.transacao.dto.FaturaResponse;
+import com.financetracker.transacao.entity.Fatura;
+import com.financetracker.transacao.entity.Transacao;
+import com.financetracker.transacao.enums.StatusFatura;
+import com.financetracker.transacao.enums.TipoTransacao;
+import com.financetracker.transacao.repository.FaturaRepository;
+import com.financetracker.transacao.repository.TransacaoRepository;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import org.springframework.http.HttpStatus;
@@ -16,7 +23,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -25,11 +34,19 @@ public class CartaoService {
     private final CartaoRepository cartaoRepository;
     private final ContaRepository contaRepository;
     private final UsuarioRepository usuarioRepository;
+    private final FaturaRepository faturaRepository;
+    private final TransacaoRepository transacaoRepository;
 
-    public CartaoService(CartaoRepository cartaoRepository, ContaRepository contaRepository, UsuarioRepository usuarioRepository) {
+    public CartaoService(CartaoRepository cartaoRepository,
+                         ContaRepository contaRepository,
+                         UsuarioRepository usuarioRepository,
+                         FaturaRepository faturaRepository,
+                         TransacaoRepository transacaoRepository) {
         this.cartaoRepository = cartaoRepository;
         this.contaRepository = contaRepository;
         this.usuarioRepository = usuarioRepository;
+        this.faturaRepository = faturaRepository;
+        this.transacaoRepository = transacaoRepository;
     }
 
     private Usuario getAuthenticatedUsuario() {
@@ -81,20 +98,135 @@ public class CartaoService {
         return new CartaoResponse(cartaoRepository.save(cartao));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public List<CartaoResponse> listar() {
         Usuario usuario = getAuthenticatedUsuario();
-        return cartaoRepository.findByUsuarioIdAndAtivoTrue(usuario.getId())
-                .stream()
-                .map(CartaoResponse::new)
-                .toList();
+        atualizarStatusERolloverFaturas(usuario);
+        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuario.getId());
+        LocalDate hoje = LocalDate.now();
+
+        return cartoes.stream().map(c -> {
+            LocalDate mesReferenciaAtual = calcularMesReferenciaFatura(c, hoje);
+            List<Fatura> faturas = faturaRepository.findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(c.getId(), usuario.getId());
+            BigDecimal faturaCartao = BigDecimal.ZERO;
+            String status = "ABERTA";
+
+            LocalDate faturaRef = null;
+            if (faturas.isEmpty()) {
+                faturaCartao = c.getLimite().subtract(c.getLimiteDisponivel());
+            } else {
+                BigDecimal fechadasPendentes = BigDecimal.ZERO;
+                boolean temFechadaOuAtrasada = false;
+                for (Fatura f : faturas) {
+                    // Faturas ATRASADAS com rolladoOver=true já tiveram seu saldo transferido
+                    // para a próxima fatura - não somar aqui para evitar dupla contagem
+                    if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
+                    if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
+                            && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
+                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
+                        temFechadaOuAtrasada = true;
+                        if (faturaRef == null) {
+                            faturaRef = f.getMesReferencia();
+                        }
+                    }
+                }
+
+                if (temFechadaOuAtrasada) {
+                    faturaCartao = fechadasPendentes;
+                    status = "FECHADA";
+                } else {
+                // Encontra a fatura aberta mais antiga (para servir como a fatura atual exibida no card)
+                Fatura fAtual = faturas.stream()
+                        .filter(f -> f.getStatus() == StatusFatura.ABERTA)
+                        .min((a, b) -> a.getMesReferencia().compareTo(b.getMesReferencia()))
+                        .orElse(null);
+
+                if (fAtual != null) {
+                    BigDecimal restante = fAtual.getValorTotal();
+                    faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
+                    status = "ABERTA";
+                    faturaRef = fAtual.getMesReferencia();
+                } else {
+                    // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
+                    for (Fatura f : faturas) {
+                        if (f.getMesReferencia().equals(mesReferenciaAtual)) {
+                            BigDecimal restante = f.getValorTotal();
+                            faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
+                            faturaRef = f.getMesReferencia();
+                            break;
+                        }
+                    }
+                    status = "ABERTA";
+                }
+                }
+            }
+            return new CartaoResponse(c, faturaCartao, status, faturaRef != null ? faturaRef.toString() : null);
+        }).toList();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public CartaoResponse buscarPorId(UUID cartaoId) {
         Usuario usuario = getAuthenticatedUsuario();
+        atualizarStatusERolloverFaturas(usuario);
         Cartao cartao = findCartaoDoUsuario(cartaoId, usuario.getId());
-        return new CartaoResponse(cartao);
+        
+        LocalDate hoje = LocalDate.now();
+        LocalDate mesReferenciaAtual = calcularMesReferenciaFatura(cartao, hoje);
+        List<Fatura> faturas = faturaRepository.findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuario.getId());
+        BigDecimal faturaCartao = BigDecimal.ZERO;
+        String status = "ABERTA";
+        LocalDate faturaRef = null;
+
+        if (faturas.isEmpty()) {
+            faturaCartao = cartao.getLimite().subtract(cartao.getLimiteDisponivel());
+        } else {
+            BigDecimal fechadasPendentes = BigDecimal.ZERO;
+            boolean temFechadaOuAtrasada = false;
+            for (Fatura f : faturas) {
+                // Faturas ATRASADAS com rolladoOver=true já tiveram seu saldo transferido
+                // para a próxima fatura - não somar aqui para evitar dupla contagem
+                if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
+                if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
+                        && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
+                    fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
+                    temFechadaOuAtrasada = true;
+                    if (faturaRef == null) {
+                        faturaRef = f.getMesReferencia();
+                    }
+                }
+            }
+
+            if (temFechadaOuAtrasada) {
+                faturaCartao = fechadasPendentes;
+                status = "FECHADA";
+            } else {
+                // Encontra a fatura aberta mais antiga (para servir como a fatura atual exibida no card)
+                Fatura fAtual = faturas.stream()
+                        .filter(f -> f.getStatus() == StatusFatura.ABERTA)
+                        .min((a, b) -> a.getMesReferencia().compareTo(b.getMesReferencia()))
+                        .orElse(null);
+
+                if (fAtual != null) {
+                    faturaCartao = fAtual.getValorTotal();
+                    status = "ABERTA";
+                    faturaRef = fAtual.getMesReferencia();
+                } else {
+                    // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
+                    for (Fatura f : faturas) {
+                        if (f.getMesReferencia().equals(mesReferenciaAtual)) {
+                            faturaCartao = f.getValorTotal();
+                            if (faturaCartao.compareTo(BigDecimal.ZERO) < 0) {
+                                faturaCartao = BigDecimal.ZERO;
+                            }
+                            faturaRef = f.getMesReferencia();
+                            break;
+                        }
+                    }
+                    status = "ABERTA";
+                }
+            }
+        }
+        return new CartaoResponse(cartao, faturaCartao, status, faturaRef != null ? faturaRef.toString() : null);
     }
 
     @Transactional
@@ -141,6 +273,15 @@ public class CartaoService {
         cartaoRepository.save(cartao);
     }
 
+    private LocalDate calcularMesReferenciaFatura(Cartao cartao, LocalDate data) {
+        int diaFechamento = cartao.getDiaFechamento();
+        if (data.getDayOfMonth() < diaFechamento) {
+            return data.withDayOfMonth(1);
+        } else {
+            return data.plusMonths(1).withDayOfMonth(1);
+        }
+    }
+
     @Transactional(readOnly = true)
     public CartaoResumoResponse resumo() {
         Usuario usuario = getAuthenticatedUsuario();
@@ -150,14 +291,59 @@ public class CartaoService {
         BigDecimal totalLimiteDisponivel = BigDecimal.ZERO;
         BigDecimal totalFaturaEstimada = BigDecimal.ZERO;
 
+        LocalDate hoje = LocalDate.now();
+
         for (Cartao c : cartoes) {
             totalLimite = totalLimite.add(c.getLimite());
             totalLimiteDisponivel = totalLimiteDisponivel.add(c.getLimiteDisponivel());
-            // Fatura estimada = Limite total - Limite disponível
-            BigDecimal faturaCartao = c.getLimite().subtract(c.getLimiteDisponivel());
-            if (faturaCartao.compareTo(BigDecimal.ZERO) > 0) {
-                totalFaturaEstimada = totalFaturaEstimada.add(faturaCartao);
+
+            LocalDate mesReferenciaAtual = calcularMesReferenciaFatura(c, hoje);
+            List<Fatura> faturas = faturaRepository.findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(c.getId(), usuario.getId());
+            BigDecimal faturaCartao = BigDecimal.ZERO;
+
+            if (faturas.isEmpty()) {
+                faturaCartao = c.getLimite().subtract(c.getLimiteDisponivel());
+            } else {
+                BigDecimal fechadasPendentes = BigDecimal.ZERO;
+                boolean temFechadaOuAtrasada = false;
+                for (Fatura f : faturas) {
+                    // Faturas ATRASADAS com rolladoOver=true já tiveram seu saldo transferido
+                    // para a próxima fatura - não somar aqui para evitar dupla contagem
+                    if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
+                    if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
+                            && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
+                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
+                        temFechadaOuAtrasada = true;
+                    }
+                }
+
+                if (temFechadaOuAtrasada) {
+                    faturaCartao = fechadasPendentes;
+                } else {
+                    // Encontra a fatura aberta mais antiga (para servir como a fatura atual exibida no card)
+                    Fatura fAtual = faturas.stream()
+                            .filter(f -> f.getStatus() == StatusFatura.ABERTA)
+                            .min((a, b) -> a.getMesReferencia().compareTo(b.getMesReferencia()))
+                            .orElse(null);
+
+                    if (fAtual != null) {
+                        faturaCartao = fAtual.getValorTotal();
+                    } else {
+                        // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
+                        for (Fatura f : faturas) {
+                            if (f.getMesReferencia().equals(mesReferenciaAtual)) {
+                                faturaCartao = f.getValorTotal();
+                                if (faturaCartao.compareTo(BigDecimal.ZERO) < 0) {
+                                    faturaCartao = BigDecimal.ZERO;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
             }
+
+            totalFaturaEstimada = totalFaturaEstimada.add(faturaCartao);
         }
 
         return new CartaoResumoResponse(
@@ -166,5 +352,118 @@ public class CartaoService {
                 totalFaturaEstimada,
                 cartoes.size()
         );
+    }
+
+    @Transactional
+    public List<FaturaResponse> listarFaturas(UUID cartaoId) {
+        Usuario usuario = getAuthenticatedUsuario();
+        atualizarStatusERolloverFaturas(usuario);
+        Cartao cartao = findCartaoDoUsuario(cartaoId, usuario.getId());
+
+        return faturaRepository.findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuario.getId())
+                .stream()
+                .map(FaturaResponse::new)
+                .toList();
+    }
+
+    private Fatura getOrCreateFatura(Cartao cartao, Usuario usuario, LocalDate mesReferencia) {
+        Optional<Fatura> existente = faturaRepository
+                .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuario.getId(), mesReferencia);
+        if (existente.isPresent()) {
+            return existente.get();
+        }
+
+        int diaFechamento = cartao.getDiaFechamento();
+        int diaVencimento = cartao.getDiaVencimento();
+
+        LocalDate dataFechamento = mesReferencia.withDayOfMonth(diaFechamento);
+        LocalDate dataVencimento = mesReferencia.withDayOfMonth(diaVencimento);
+        if (dataVencimento.isBefore(dataFechamento)) {
+            dataVencimento = dataVencimento.plusMonths(1);
+        }
+
+        Fatura fatura = new Fatura();
+        fatura.setUsuario(usuario);
+        fatura.setCartao(cartao);
+        fatura.setMesReferencia(mesReferencia);
+        fatura.setDataFechamento(dataFechamento);
+        fatura.setDataVencimento(dataVencimento);
+        fatura.setValorTotal(BigDecimal.ZERO);
+        fatura.setValorPago(BigDecimal.ZERO);
+
+        LocalDate dataCriacaoUsuario = usuario.getCriadoEm().toLocalDate();
+        if (dataVencimento.isBefore(dataCriacaoUsuario)) {
+            fatura.setStatus(StatusFatura.PAGA);
+        } else {
+            LocalDate hoje = LocalDate.now();
+            if (hoje.isAfter(dataFechamento) || hoje.isEqual(dataFechamento)) {
+                fatura.setStatus(StatusFatura.FECHADA);
+            } else {
+                fatura.setStatus(StatusFatura.ABERTA);
+            }
+        }
+
+        return faturaRepository.save(fatura);
+    }
+
+    @Transactional
+    public void atualizarStatusERolloverFaturas(Usuario usuario) {
+        LocalDate hoje = LocalDate.now();
+        List<Fatura> faturas = faturaRepository.findByUsuarioId(usuario.getId());
+
+        for (Fatura f : faturas) {
+            BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
+
+            // Se passou do vencimento
+            if (hoje.isAfter(f.getDataVencimento())) {
+                if (restante.compareTo(BigDecimal.ZERO) > 0) {
+                    // Marca como ATRASADA e executa o rollover apenas UMA vez (controlado por rolladoOver)
+                    if (!f.isRolladoOver()) {
+                        f.setStatus(StatusFatura.ATRASADA);
+                        f.setRolladoOver(true);
+                        faturaRepository.save(f);
+
+                        // Rollover do saldo para o próximo mês
+                        LocalDate proximoMes = f.getMesReferencia().plusMonths(1);
+                        Fatura proximaFatura = getOrCreateFatura(f.getCartao(), usuario, proximoMes);
+
+                        Transacao rollover = new Transacao();
+                        rollover.setUsuario(usuario);
+                        rollover.setDescricao("Saldo restante não pago - Fatura " + f.getMesReferencia().getMonthValue() + "/" + f.getMesReferencia().getYear());
+                        rollover.setValor(restante);
+                        rollover.setTipo(TipoTransacao.COMPRA_CREDITO);
+                        rollover.setCartao(f.getCartao());
+                        rollover.setFatura(proximaFatura);
+                        rollover.setData(hoje);
+                        rollover.setAtivo(true);
+                        rollover.setEstornada(false);
+                        transacaoRepository.save(rollover);
+
+                        proximaFatura.setValorTotal(proximaFatura.getValorTotal().add(restante));
+                        faturaRepository.save(proximaFatura);
+                    } else if (f.getStatus() != StatusFatura.ATRASADA) {
+                        // Já fez rollover mas status pode ter sido alterado manualmente
+                        f.setStatus(StatusFatura.ATRASADA);
+                        faturaRepository.save(f);
+                    }
+                } else {
+                    if (f.getStatus() != StatusFatura.PAGA) {
+                        f.setStatus(StatusFatura.PAGA);
+                        faturaRepository.save(f);
+                    }
+                }
+            }
+            // Se passou do fechamento mas ainda não do vencimento
+            else if (hoje.isAfter(f.getDataFechamento()) || hoje.isEqual(f.getDataFechamento())) {
+                if (f.getStatus() == StatusFatura.ABERTA) {
+                    if (restante.compareTo(BigDecimal.ZERO) <= 0) {
+                        f.setStatus(StatusFatura.PAGA);
+                    } else {
+                        f.setStatus(StatusFatura.FECHADA);
+                    }
+                    faturaRepository.save(f);
+                }
+            }
+        }
     }
 }
