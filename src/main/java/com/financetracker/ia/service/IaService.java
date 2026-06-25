@@ -8,12 +8,21 @@ import com.financetracker.cartao.repository.CartaoRepository;
 import com.financetracker.categoria.entity.Categoria;
 import com.financetracker.categoria.repository.CategoriaRepository;
 import com.financetracker.ia.domain.*;
+import com.financetracker.ia.dto.ProjecaoCartaoDTO;
+import com.financetracker.ia.dto.ProjecaoCartoesResponse;
 import com.financetracker.ia.repository.IaCorrecaoUsuarioRepository;
 import com.financetracker.ia.repository.IaDicionarioCategoriaRepository;
 import com.financetracker.ia.repository.IaInsightRepository;
+import com.financetracker.conta.entity.Conta;
+import com.financetracker.conta.model.TipoConta;
+import com.financetracker.conta.repository.ContaRepository;
 import com.financetracker.transacao.entity.Fatura;
+import com.financetracker.transacao.entity.MetasEconomia;
+import com.financetracker.transacao.entity.OrcamentoCategoria;
 import com.financetracker.transacao.entity.Transacao;
 import com.financetracker.transacao.enums.StatusFatura;
+import com.financetracker.transacao.repository.MetasEconomiaRepository;
+import com.financetracker.transacao.repository.OrcamentoCategoriaRepository;
 import com.financetracker.transacao.enums.TipoTransacao;
 import com.financetracker.transacao.repository.FaturaRepository;
 import com.financetracker.transacao.repository.TransacaoRepository;
@@ -44,6 +53,9 @@ public class IaService {
     private final CategoriaRepository categoriaRepository;
     private final AssinaturaRepository assinaturaRepository;
     private final FaturaRepository faturaRepository;
+    private final ContaRepository contaRepository;
+    private final OrcamentoCategoriaRepository orcamentoRepository;
+    private final MetasEconomiaRepository metasRepository;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
 
@@ -74,6 +86,9 @@ public class IaService {
                      CategoriaRepository categoriaRepository,
                      AssinaturaRepository assinaturaRepository,
                      FaturaRepository faturaRepository,
+                     ContaRepository contaRepository,
+                     OrcamentoCategoriaRepository orcamentoRepository,
+                     MetasEconomiaRepository metasRepository,
                      ObjectMapper objectMapper) {
         this.iaInsightRepository = iaInsightRepository;
         this.iaDicionarioCategoriaRepository = iaDicionarioCategoriaRepository;
@@ -83,6 +98,9 @@ public class IaService {
         this.categoriaRepository = categoriaRepository;
         this.assinaturaRepository = assinaturaRepository;
         this.faturaRepository = faturaRepository;
+        this.contaRepository = contaRepository;
+        this.orcamentoRepository = orcamentoRepository;
+        this.metasRepository = metasRepository;
         this.objectMapper = objectMapper;
         this.restTemplate = new RestTemplate();
     }
@@ -330,6 +348,492 @@ public class IaService {
         processarInsightsCartaoParaUsuario(usuario);
         processarInsightsAssinaturaParaUsuario(usuario);
         processarTrialHunter(usuario);
+
+        // ── Novos insights comportamentais ──────────────────────────
+        processarMicroTransacoes(usuario);
+        processarOrcamentoSobraMeta(usuario);
+        processarDinheiroDormindo(usuario);
+        processarRadarFimSemana(usuario);
+        processarQuedaReceita(usuario);
+        processarReforcoPositivo(usuario);
+        processarAceleradorMetas(usuario);
+        processarInflacaoPessoal(usuario);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // NOVOS INSIGHTS COMPORTAMENTAIS
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── #1: GASTO FORMIGUINHA ────────────────────────────────────────────────
+    //
+    // Detecta categorias com alto volume de transações pequenas que somam um
+    // valor significativo. O cérebro humano ignora micro-transações, mas elas
+    // destroem o orçamento no fim do mês.
+    private void processarMicroTransacoes(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        LocalDate inicioMes = hoje.withDayOfMonth(1);
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        List<Categoria> categorias = categoriaRepository.findAllByUsuarioId(usuarioId);
+        for (Categoria categoria : categorias) {
+            long qtdTransacoes = transacaoRepository.countByCategoriaAndPeriodo(
+                    usuarioId, categoria.getId(), inicioMes, hoje);
+            if (qtdTransacoes < 8) continue; // Mínimo para ser "formiguinha"
+
+            BigDecimal totalCategoria = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                    usuarioId, categoria.getId(), inicioMes, hoje);
+            if (totalCategoria.compareTo(BigDecimal.ZERO) <= 0) continue;
+
+            BigDecimal valorMedio = totalCategoria.divide(
+                    BigDecimal.valueOf(qtdTransacoes), 2, RoundingMode.HALF_UP);
+
+            // Só relevante se o valor médio for pequeno (< R$ 40)
+            if (valorMedio.compareTo(BigDecimal.valueOf(40.00)) >= 0) continue;
+
+            boolean jaExiste = insightsExistentes.stream()
+                    .anyMatch(ins -> ins.getTipo() == TipoInsight.MICRO_TRANSACOES
+                            && ins.getMetadados() != null
+                            && ins.getMetadados().contains(categoria.getId().toString()));
+            if (jaExiste) continue;
+
+            IaInsight insight = new IaInsight(
+                    usuario,
+                    TipoInsight.MICRO_TRANSACOES,
+                    "Gasto Formiguinha: " + categoria.getNome(),
+                    String.format(
+                            "Você fez %d compras em \"%s\" este mês, totalizando R$ %.2f. " +
+                            "Cada uma parece pequena (média R$ %.2f), mas o acumulado é significativo. " +
+                            "Compensaria planejar um limite mensal para essa categoria?",
+                            qtdTransacoes, categoria.getNome(), totalCategoria, valorMedio),
+                    String.format(
+                            "{\"categoriaId\":\"%s\",\"categoria\":\"%s\",\"quantidade\":%d,\"total\":%.2f,\"valorMedio\":%.2f}",
+                            categoria.getId(), categoria.getNome(), qtdTransacoes,
+                            totalCategoria.doubleValue(), valorMedio.doubleValue())
+            );
+            iaInsightRepository.save(insight);
+        }
+    }
+
+    // ── #2: ORÇAMENTO → METAS (Fechando o Ciclo) ─────────────────────────────
+    //
+    // Quando sobra orçamento no fim do mês, sugere transferir para uma meta de
+    // economia ativa. Faz a ponte entre OrcamentoCategoria e MetasEconomia.
+    private void processarOrcamentoSobraMeta(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        // Só gera entre dia 25 e último dia do mês (fim de ciclo)
+        if (hoje.getDayOfMonth() < 25) return;
+
+        LocalDate inicioMes = hoje.withDayOfMonth(1);
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+        List<MetasEconomia> metasAtivas = metasRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+        if (metasAtivas.isEmpty()) return;
+
+        List<OrcamentoCategoria> orcamentos = orcamentoRepository.findByUsuarioId(usuarioId);
+        for (OrcamentoCategoria orcamento : orcamentos) {
+            if (orcamento.getLimiteMensal() == null || orcamento.getLimiteMensal().compareTo(BigDecimal.ZERO) <= 0) continue;
+
+            BigDecimal gastoMes = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                    usuarioId, orcamento.getCategoria().getId(), inicioMes, hoje);
+            if (gastoMes.compareTo(BigDecimal.ZERO) <= 0) continue;
+
+            BigDecimal sobra = orcamento.getLimiteMensal().subtract(gastoMes);
+            if (sobra.compareTo(BigDecimal.ZERO) <= 0) continue;
+
+            double percentualSobra = sobra.divide(orcamento.getLimiteMensal(), 4, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal.valueOf(100)).doubleValue();
+            if (percentualSobra < 10.0) continue; // Só alerta se sobrou 10%+
+
+            boolean jaExiste = insightsExistentes.stream()
+                    .anyMatch(ins -> ins.getTipo() == TipoInsight.ORCAMENTO_SOBRA_META
+                            && ins.getMetadados() != null
+                            && ins.getMetadados().contains(orcamento.getCategoria().getId().toString()));
+            if (jaExiste) continue;
+
+            MetasEconomia meta = metasAtivas.get(0); // Melhor meta para sugerir
+            IaInsight insight = new IaInsight(
+                    usuario,
+                    TipoInsight.ORCAMENTO_SOBRA_META,
+                    "Sobra no Orçamento: " + orcamento.getCategoria().getNome(),
+                    String.format(
+                            "Faltam %d dia(s) para o mês acabar e você economizou R$ %.2f no orçamento " +
+                            "de \"%s\" (%.0f%% de sobra). Que tal transferir esse valor para a sua " +
+                            "meta \"%s\"? Atualmente você acumulou R$ %.2f de R$ %.2f.",
+                            hoje.lengthOfMonth() - hoje.getDayOfMonth(),
+                            sobra, orcamento.getCategoria().getNome(), percentualSobra,
+                            meta.getNome(), meta.getValorAcumulado(), meta.getValorAlvo()),
+                    String.format(
+                            "{\"categoriaId\":\"%s\",\"orcamento\":%.2f,\"gasto\":%.2f,\"sobra\":%.2f,\"metaId\":\"%s\",\"metaNome\":\"%s\"}",
+                            orcamento.getCategoria().getId(),
+                            orcamento.getLimiteMensal().doubleValue(), gastoMes.doubleValue(),
+                            sobra.doubleValue(), meta.getId(), meta.getNome())
+            );
+            iaInsightRepository.save(insight);
+        }
+    }
+
+    // ── #3: DINHEIRO DORMINDO ────────────────────────────────────────────────
+    //
+    // Identifica saldos parados em contas correntes sem movimentação, sugerindo
+    // otimização de liquidez (investimento).
+    private void processarDinheiroDormindo(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        List<Conta> contas = contaRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+        for (Conta conta : contas) {
+            if (conta.getTipo() != TipoConta.CORRENTE) continue;
+            if (conta.getSaldo().compareTo(BigDecimal.valueOf(1000)) < 0) continue;
+
+            // Verificar se houve saída nos últimos 15 dias
+            LocalDate quinzeDiasAtras = hoje.minusDays(15);
+            List<Transacao> transacoesRecentes = transacaoRepository
+                    .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
+                            usuarioId, quinzeDiasAtras, hoje);
+            boolean teveSaida = transacoesRecentes.stream()
+                    .anyMatch(t -> t.getContaOrigem() != null
+                            && t.getContaOrigem().getId().equals(conta.getId()));
+
+            if (teveSaida) continue;
+
+            boolean jaExiste = insightsExistentes.stream()
+                    .anyMatch(ins -> ins.getTipo() == TipoInsight.DINHEIRO_DORMINDO
+                            && ins.getMetadados() != null
+                            && ins.getMetadados().contains(conta.getId().toString()));
+            if (jaExiste) continue;
+
+            IaInsight insight = new IaInsight(
+                    usuario,
+                    TipoInsight.DINHEIRO_DORMINDO,
+                    "Dinheiro Dormindo: " + conta.getNome(),
+                    String.format(
+                            "Notei que seu saldo de R$ %.2f na \"%s\" está parado há mais de 15 dias " +
+                            "sem previsão de uso. Se estivesse em uma conta rendendo 100%% do CDI, " +
+                            "você já teria ganho juros. Considere investir o que não vai usar.",
+                            conta.getSaldo(), conta.getNome()),
+                    String.format(
+                            "{\"contaId\":\"%s\",\"conta\":\"%s\",\"saldo\":%.2f,\"diasParado\":15}",
+                            conta.getId(), conta.getNome(), conta.getSaldo().doubleValue())
+            );
+            iaInsightRepository.save(insight);
+        }
+    }
+
+    // ── #4: RADAR DE FIM DE SEMANA ───────────────────────────────────────────
+    //
+    // Cruza dias da semana com categorias de gasto para identificar padrões
+    // comportamentais (ex: 85% dos gastos com Lazer nos domingos à noite).
+    private void processarRadarFimSemana(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        LocalDate inicioMes = hoje.withDayOfMonth(1);
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        List<Categoria> categorias = categoriaRepository.findAllByUsuarioId(usuarioId);
+        String[] diasSemana = {"Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"};
+
+        for (Categoria categoria : categorias) {
+            List<Transacao> transacoes = transacaoRepository
+                    .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
+                            usuarioId, inicioMes, hoje)
+                    .stream()
+                    .filter(t -> t.getCategoria() != null && t.getCategoria().getId().equals(categoria.getId()))
+                    .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO
+                            || t.getTipo() == TipoTransacao.PIX
+                            || t.getTipo() == TipoTransacao.SAQUE)
+                    .collect(Collectors.toList());
+
+            if (transacoes.size() < 5) continue; // Precisa de dados suficientes
+
+            // Agrupar por dia da semana
+            Map<Integer, Long> porDiaSemana = transacoes.stream()
+                    .collect(Collectors.groupingBy(
+                            t -> t.getData().getDayOfWeek().getValue() % 7, // 0=Dom, 1=Seg...
+                            Collectors.counting()));
+
+            long totalTransacoes = transacoes.size();
+            for (Map.Entry<Integer, Long> entry : porDiaSemana.entrySet()) {
+                double percentual = (entry.getValue() * 100.0) / totalTransacoes;
+                if (percentual < 70.0) continue; // Só alerta se 70%+ no mesmo dia
+
+                boolean jaExiste = insightsExistentes.stream()
+                        .anyMatch(ins -> ins.getTipo() == TipoInsight.RADAR_FIM_SEMANA
+                                && ins.getMetadados() != null
+                                && ins.getMetadados().contains(categoria.getId().toString()));
+                if (jaExiste) continue;
+
+                String nomeDia = diasSemana[entry.getKey()];
+                IaInsight insight = new IaInsight(
+                        usuario,
+                        TipoInsight.RADAR_FIM_SEMANA,
+                        "Radar de Padrão: " + categoria.getNome(),
+                        String.format(
+                                "Alerta de padrão: %.0f%% dos seus gastos com \"%s\" acontecem nas %ss. " +
+                                "Isso pode indicar um comportamento emocional recorrente. " +
+                                "Que tal planejar alternativas mais econômicas para os próximos %ss?",
+                                percentual, categoria.getNome(), nomeDia, nomeDia.toLowerCase()),
+                        String.format(
+                                "{\"categoriaId\":\"%s\",\"diaSemana\":\"%s\",\"percentual\":%.0f,\"totalNoDia\":%d}",
+                                categoria.getId(), nomeDia, percentual, entry.getValue())
+                );
+                iaInsightRepository.save(insight);
+            }
+        }
+    }
+
+    // ── #5: QUEDA DE RECEITA ─────────────────────────────────────────────────
+    //
+    // Monitora entradas (DEPOSITO, PIX, TRANSFERENCIA) e alerta quando a
+    // receita do mês atual cai significativamente em relação ao mês anterior.
+    private void processarQuedaReceita(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        LocalDate inicioMesAtual = hoje.withDayOfMonth(1);
+        LocalDate inicioMesAnterior = inicioMesAtual.minusMonths(1);
+        LocalDate fimMesAnterior = inicioMesAtual.minusDays(1);
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        List<TipoTransacao> tiposEntrada = List.of(TipoTransacao.DEPOSITO, TipoTransacao.PIX, TipoTransacao.TRANSFERENCIA);
+
+        BigDecimal receitaMesAtual = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                usuarioId, null, inicioMesAtual, hoje);
+        BigDecimal receitaMesAnterior = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                usuarioId, null, inicioMesAnterior, fimMesAnterior);
+
+        // Usar a query geral para receita (sem filtro de categoria)
+        // Precisamos de uma query específica — usar a query existente de soma total
+        // Mas sumValorByCategoriaAndPeriodoSemFiltroTipo espera categoriaId, então vamos
+        // calcular diretamente via transacoes
+        List<Transacao> transacoesMesAtual = transacaoRepository
+                .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
+                        usuarioId, inicioMesAtual, hoje);
+        List<Transacao> transacoesMesAnterior = transacaoRepository
+                .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
+                        usuarioId, inicioMesAnterior, fimMesAnterior);
+
+        BigDecimal receitaAtual = transacoesMesAtual.stream()
+                .filter(t -> tiposEntrada.contains(t.getTipo()))
+                .map(Transacao::getValor)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal receitaAnterior = transacoesMesAnterior.stream()
+                .filter(t -> tiposEntrada.contains(t.getTipo()))
+                .map(Transacao::getValor)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (receitaAnterior.compareTo(BigDecimal.ZERO) <= 0) return; // Sem referência
+        if (receitaAtual.compareTo(BigDecimal.ZERO) >= receitaAnterior.multiply(BigDecimal.valueOf(0.70)).longValue()) {
+            // Receita caiu menos de 30% — não alertar
+            return;
+        }
+
+        double quedaPercentual = receitaAnterior.subtract(receitaAtual)
+                .divide(receitaAnterior, 4, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100)).doubleValue();
+
+        boolean jaExiste = insightsExistentes.stream()
+                .anyMatch(ins -> ins.getTipo() == TipoInsight.QUEDA_RECEITA);
+        if (jaExiste) return;
+
+        IaInsight insight = new IaInsight(
+                usuario,
+                TipoInsight.QUEDA_RECEITA,
+                "Alerta de Queda de Receita",
+                String.format(
+                        "Sua receita este mês caiu %.0f%% em relação ao mês anterior " +
+                        "(de R$ %.2f para R$ %.2f). Se o custo de vida se manteve igual, " +
+                        "atenção ao fluxo de caixa para a próxima quinzena.",
+                        quedaPercentual, receitaAnterior, receitaAtual),
+                String.format(
+                        "{\"receitaAtual\":%.2f,\"receitaAnterior\":%.2f,\"quedaPercentual\":%.1f}",
+                        receitaAtual.doubleValue(), receitaAnterior.doubleValue(), quedaPercentual)
+        );
+        iaInsightRepository.save(insight);
+    }
+
+    // ── #6: REFORÇO POSITIVO (Gamificação) ────────────────────────────────────
+    //
+    // O app não pode só dar bronca — precisa celebrar vitórias. Verifica 3 meses
+    // consecutivos de receita > despesa ou redução de gastos em categorias.
+    private void processarReforcoPositivo(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        // Verificar 3 meses consecutivos: receita > despesa
+        boolean todosPositivos = true;
+        List<String> mesesStatus = new ArrayList<>();
+
+        for (int i = 0; i < 3; i++) {
+            LocalDate inicioMes = hoje.minusMonths(i).withDayOfMonth(1);
+            LocalDate fimMes = hoje.minusMonths(i).withDayOfMonth(hoje.minusMonths(i).lengthOfMonth());
+
+            List<Transacao> transacoesMes = transacaoRepository
+                    .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
+                            usuarioId, inicioMes, fimMes);
+
+            List<TipoTransacao> tiposEntrada = List.of(TipoTransacao.DEPOSITO, TipoTransacao.PIX, TipoTransacao.TRANSFERENCIA);
+            BigDecimal receita = transacoesMes.stream()
+                    .filter(t -> tiposEntrada.contains(t.getTipo()))
+                    .map(Transacao::getValor)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal despesa = transacoesMes.stream()
+                    .filter(t -> !tiposEntrada.contains(t.getTipo()))
+                    .map(Transacao::getValor)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            String nomeMes = inicioMes.getMonth().getDisplayName(
+                    java.time.format.TextStyle.FULL, new Locale("pt", "BR"));
+            mesesStatus.add(String.format("%s: R$ %.2f vs R$ %.2f", nomeMes, receita, despesa));
+
+            if (receita.compareTo(despesa) <= 0) {
+                todosPositivos = false;
+                break;
+            }
+        }
+
+        if (todosPositivos) {
+            boolean jaExiste = insightsExistentes.stream()
+                    .anyMatch(ins -> ins.getTipo() == TipoInsight.REFORCO_POSITIVO
+                            && ins.getMetadados() != null && ins.getMetadados().contains("streak"));
+            if (!jaExiste) {
+                IaInsight insight = new IaInsight(
+                        usuario,
+                        TipoInsight.REFORCO_POSITIVO,
+                        "Parabéns! Saúde Financeira Excelente!",
+                        String.format(
+                                "🎉 É o 3º mês consecutivo que você gasta menos do que ganha! " +
+                                "Sua saúde financeira está excelente. Continue assim!\n%s",
+                                String.join(" | ", mesesStatus)),
+                        "{\"tipoReforco\":\"streak\",\"mesesConsecutivos\":3}"
+                );
+                iaInsightRepository.save(insight);
+            }
+        }
+    }
+
+    // ── #7: ACELERADOR DE METAS ──────────────────────────────────────────────
+    //
+    // Traduz o gasto em tempo perdido para alcançar uma meta. O utilizador deixa
+    // de ver o gasto como "apenas R$ X" e passa a vê-lo como obstáculo ao sonho.
+    private void processarAceleradorMetas(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        LocalDate inicioMes = hoje.withDayOfMonth(1);
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        List<MetasEconomia> metasAtivas = metasRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+        if (metasAtivas.isEmpty()) return;
+
+        List<Categoria> categorias = categoriaRepository.findAllByUsuarioId(usuarioId);
+        for (Categoria categoria : categorias) {
+            BigDecimal gastoMes = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                    usuarioId, categoria.getId(), inicioMes, hoje);
+            if (gastoMes.compareTo(BigDecimal.valueOf(30.00)) < 0) continue; // Mínimo relevante
+
+            for (MetasEconomia meta : metasAtivas) {
+                BigDecimal restante = meta.getValorAlvo().subtract(meta.getValorAcumulado());
+                if (restante.compareTo(BigDecimal.ZERO) <= 0) continue;
+
+                // Calcular quantos meses esse gasto atrasa a meta (gasto mensal / restante)
+                double mesesAtrasados = gastoMes.compareTo(BigDecimal.ZERO) > 0
+                        ? restante.divide(gastoMes, 2, RoundingMode.HALF_UP).doubleValue()
+                        : 0;
+                if (mesesAtrasados < 0.5) continue; // Só se atrasar 0.5+ mês
+
+                boolean jaExiste = insightsExistentes.stream()
+                        .anyMatch(ins -> ins.getTipo() == TipoInsight.ACELERADOR_METAS
+                                && ins.getMetadados() != null
+                                && ins.getMetadados().contains(meta.getId().toString())
+                                && ins.getMetadados().contains(categoria.getId().toString()));
+                if (jaExiste) continue;
+
+                IaInsight insight = new IaInsight(
+                        usuario,
+                        TipoInsight.ACELERADOR_METAS,
+                        "Custo de Oportunidade: " + categoria.getNome(),
+                        String.format(
+                                "Sabia que os R$ %.2f gastos em \"%s\" este mês poderiam " +
+                                "antecipar a sua meta \"%s\" em %.1f meses? " +
+                                "Considere reduzir nessa categoria para alcançar seu objetivo mais rápido.",
+                                gastoMes, categoria.getNome(), meta.getNome(), mesesAtrasados),
+                        String.format(
+                                "{\"metaId\":\"%s\",\"metaNome\":\"%s\",\"gastoCategoria\":%.2f,\"categoria\":\"%s\",\"mesesAtrasados\":%.1f}",
+                                meta.getId(), meta.getNome(), gastoMes.doubleValue(),
+                                categoria.getNome(), mesesAtrasados)
+                );
+                iaInsightRepository.save(insight);
+            }
+        }
+    }
+
+    // ── #8: INFLAÇÃO PESSOAL (Detetive de Estilo de Vida) ────────────────────
+    //
+    // Analisa o custo médio por categoria ao longo dos meses. Se o utilizador
+    // continua indo ao mesmo lugar, mas a conta total subiu, alerta.
+    private void processarInflacaoPessoal(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        // Mês atual vs mês anterior
+        LocalDate inicioMesAtual = hoje.withDayOfMonth(1);
+        LocalDate fimMesAtual = hoje;
+        LocalDate inicioMesAnterior = inicioMesAtual.minusMonths(1);
+        LocalDate fimMesAnterior = inicioMesAtual.minusDays(1);
+
+        List<Categoria> categorias = categoriaRepository.findAllByUsuarioId(usuarioId);
+        for (Categoria categoria : categorias) {
+            // Média mensal dos 2 meses anteriores
+            BigDecimal gastoMesAnterior = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                    usuarioId, categoria.getId(), inicioMesAnterior, fimMesAnterior);
+            if (gastoMesAnterior.compareTo(BigDecimal.ZERO) <= 0) continue;
+
+            // Média do mês atual (projetada para 30 dias se ainda não acabou)
+            BigDecimal gastoMesAtual = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
+                    usuarioId, categoria.getId(), inicioMesAtual, fimMesAtual);
+
+            // Projetar para o mês inteiro
+            long diasPassados = ChronoUnit.DAYS.between(inicioMesAtual, hoje) + 1;
+            if (diasPassados < 5) continue; // Dados insuficientes no início do mês
+            BigDecimal projetado = gastoMesAtual
+                    .divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal.valueOf(hoje.lengthOfMonth()))
+                    .setScale(2, RoundingMode.HALF_UP);
+
+            double variacaoPercentual = gastoMesAnterior.compareTo(BigDecimal.ZERO) > 0
+                    ? projetado.subtract(gastoMesAnterior)
+                            .divide(gastoMesAnterior, 4, RoundingMode.HALF_UP)
+                            .multiply(BigDecimal.valueOf(100)).doubleValue()
+                    : 0;
+
+            if (variacaoPercentual < 15.0) continue; // Só alerta se subiu 15%+
+
+            boolean jaExiste = insightsExistentes.stream()
+                    .anyMatch(ins -> ins.getTipo() == TipoInsight.INFLACAO_PESSOAL
+                            && ins.getMetadados() != null
+                            && ins.getMetadados().contains(categoria.getId().toString()));
+            if (jaExiste) continue;
+
+            IaInsight insight = new IaInsight(
+                    usuario,
+                    TipoInsight.INFLACAO_PESSOAL,
+                    "Inflação Pessoal: " + categoria.getNome(),
+                    String.format(
+                            "O seu gasto em \"%s\" aumentou %.0f%% neste mês em relação ao anterior " +
+                            "(de R$ %.2f para R$ %.2f projetado). " +
+                            "Atenção a preços que possam estar encarecendo o seu carrinho!",
+                            categoria.getNome(), variacaoPercentual,
+                            gastoMesAnterior, projetado),
+                    String.format(
+                            "{\"categoriaId\":\"%s\",\"gastoMesAtual\":%.2f,\"gastoMesAnterior\":%.2f,\"variacaoPercentual\":%.1f}",
+                            categoria.getId(), projetado.doubleValue(),
+                            gastoMesAnterior.doubleValue(), variacaoPercentual)
+            );
+            iaInsightRepository.save(insight);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -585,6 +1089,77 @@ public class IaService {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // AVISO DE FECHAMENTO IMINENTE (endpoint dedicado)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Endpoint dedicado: verifica todos os cartões ativos e gera alertas
+     * de fechamento iminente quando a fatura fecha em 0-5 dias.
+     * Chamado ao entrar na tela /cartoes.
+     */
+    public void processarAvisoFechamentoParaUsuario(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        List<IaInsight> insightsExistentes = iaInsightRepository
+                .findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
+
+        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+
+        for (Cartao cartao : cartoes) {
+            int diaFechamento = cartao.getDiaFechamento();
+            int diaFechamentoEfetivo = Math.min(diaFechamento, hoje.lengthOfMonth());
+            LocalDate dataFechamentoNoMes = hoje.withDayOfMonth(diaFechamentoEfetivo);
+
+            // Se já passou do fechamento deste mês, calcular o do próximo
+            LocalDate dataFechamentoAlerta = dataFechamentoNoMes;
+            if (hoje.isAfter(dataFechamentoNoMes)) {
+                LocalDate proximoMes = hoje.plusMonths(1);
+                int diaFechamentoEfetivoProximo = Math.min(diaFechamento, proximoMes.lengthOfMonth());
+                dataFechamentoAlerta = proximoMes.withDayOfMonth(diaFechamentoEfetivoProximo);
+            }
+
+            long diasParaFechamento = ChronoUnit.DAYS.between(hoje, dataFechamentoAlerta);
+
+            // Threshold: 1-5 dias para fechamento (dia 0 = já fechou, sem sentido alertar)
+            if (diasParaFechamento >= 1 && diasParaFechamento <= 5) {
+                // Evitar duplicidade
+                boolean jaExiste = insightsExistentes.stream()
+                        .anyMatch(ins -> ins.getTipo() == TipoInsight.AVISO_FECHAMENTO
+                                && ins.getMetadados() != null
+                                && ins.getMetadados().contains(cartao.getId().toString()));
+
+                if (!jaExiste) {
+                    String titulo;
+                    String mensagem;
+                    if (diasParaFechamento == 1) {
+                        titulo = "Fatura Fecha Amanhã";
+                        mensagem = String.format(
+                                "A fatura do %s fecha amanhã. Cuidado com os últimos gastos.",
+                                cartao.getNome());
+                    } else {
+                        titulo = "Fatura Fecha em " + diasParaFechamento + " Dias";
+                        mensagem = String.format(
+                                "A fatura do %s fecha em %d dias (%s). Planeje seus gastos.",
+                                cartao.getNome(), diasParaFechamento,
+                                dataFechamentoAlerta.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM")));
+                    }
+
+                    IaInsight insight = new IaInsight(
+                            usuario,
+                            TipoInsight.AVISO_FECHAMENTO,
+                            titulo,
+                            mensagem,
+                            "{\"cartaoId\":\"" + cartao.getId()
+                                    + "\",\"diasParaFechamento\":" + diasParaFechamento
+                                    + ",\"dataFechamento\":\"" + dataFechamentoAlerta + "\"}"
+                    );
+                    iaInsightRepository.save(insight);
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // RN-05 / RN-06 — ANÁLISE DE ASSINATURAS
     // ═══════════════════════════════════════════════════════════════════
 
@@ -830,6 +1405,378 @@ public class IaService {
         result.put("limiteDisponivel", limiteDisponivel);
         result.put("projecoesMensais", projecoesMensais);
         return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PROJEÇÃO DE FATURAS (endpoint dedicado /api/ia/projecao-cartoes)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Endpoint dedicado: retorna projeção/comparação para TODOS os cartões ativos do usuário.
+     * - Fatura ABERTA: projeção de fechamento (via IA ou extrapolation linear)
+     * - Fatura FECHADA: valor real vs média histórica
+     * Chamado: page load /cartoes, nova transação, botão "Analisar com IA"
+     */
+    @SuppressWarnings("unchecked")
+    public ProjecaoCartoesResponse projetarFaturasParaUsuario(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        LocalDate inicioMes = hoje.withDayOfMonth(1);
+        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+
+        List<ProjecaoCartaoDTO> projecoes = new ArrayList<>();
+        // Dados coletados para enviar à IA em batch (apenas cartões ABERTOS com >= 3 dias)
+        List<Map<String, Object>> dadosParaIa = new ArrayList<>();
+
+        for (Cartao cartao : cartoes) {
+            // 1. Buscar faturas históricas (últimos 6 meses, fechadas/pagas/atrasadas)
+            LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
+            List<Fatura> faturasHistoricas = faturaRepository
+                    .findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuarioId)
+                    .stream()
+                    .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
+                    .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
+                    .filter(f -> f.getMesReferencia().isBefore(inicioMes))
+                    .collect(Collectors.toList());
+
+            // 2. Calcular média histórica
+            BigDecimal mediaHistorica = null;
+            int mesesHistorico = faturasHistoricas.size();
+            if (mesesHistorico >= 2) {
+                BigDecimal totalHistorico = faturasHistoricas.stream()
+                        .map(Fatura::getValorTotal)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                mediaHistorica = totalHistorico
+                        .divide(BigDecimal.valueOf(mesesHistorico), 2, RoundingMode.HALF_UP);
+            }
+
+            // 3. Buscar gasto acumulado no mês atual (apenas COMPRA_CREDITO primárias)
+            List<Transacao> transacoesMes = transacaoRepository
+                    .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
+                    .stream()
+                    .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
+                    .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
+                    .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
+                    .collect(Collectors.toList());
+
+            BigDecimal valorAtualMes = transacoesMes.stream()
+                    .map(Transacao::getValor)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            // 4. Verificar se fatura atual está ABERTA ou FECHADA
+            Optional<Fatura> faturaAtualOpt = faturaRepository
+                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, inicioMes);
+
+            boolean faturaFechada = faturaAtualOpt
+                    .map(f -> STATUS_FECHADOS.contains(f.getStatus()))
+                    .orElse(false);
+
+            long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
+
+            // 5. Montar DTO conforme o status
+            if (faturaFechada && faturaAtualOpt.isPresent()) {
+                // ── FATURA FECHADA: usar valor real ──────────────────────
+                BigDecimal valorReal = faturaAtualOpt.get().getValorTotal();
+                BigDecimal desvioPercentual = null;
+                String classificacao;
+                String mensagem;
+
+                if (mediaHistorica != null && mediaHistorica.compareTo(BigDecimal.ZERO) > 0) {
+                    desvioPercentual = valorReal.subtract(mediaHistorica)
+                            .divide(mediaHistorica, 4, RoundingMode.HALF_UP)
+                            .multiply(BigDecimal.valueOf(100))
+                            .setScale(1, RoundingMode.HALF_UP);
+
+                    double desvio = desvioPercentual.doubleValue();
+                    if (desvio > 10.0) {
+                        classificacao = "ACIMA";
+                        mensagem = String.format(
+                                "A fatura do %s fechou em %s — %d%% acima da sua média dos últimos %d meses (%s).",
+                                cartao.getNome(), formatarValor(valorReal),
+                                Math.round(desvio), mesesHistorico, formatarValor(mediaHistorica));
+                    } else if (desvio < -10.0) {
+                        classificacao = "ABAIXO";
+                        mensagem = String.format(
+                                "A fatura do %s fechou em %s — %d%% abaixo da sua média dos últimos %d meses (%s). Excelente!",
+                                cartao.getNome(), formatarValor(valorReal),
+                                Math.abs(Math.round(desvio)), mesesHistorico, formatarValor(mediaHistorica));
+                    } else {
+                        classificacao = "DENTRO";
+                        mensagem = String.format(
+                                "A fatura do %s fechou em %s, dentro da faixa esperada (média: %s).",
+                                cartao.getNome(), formatarValor(valorReal), formatarValor(mediaHistorica));
+                    }
+                } else {
+                    classificacao = "SEM_DADOS";
+                    mensagem = String.format(
+                            "A fatura do %s fechou em %s. Histórico insuficiente para comparação.",
+                            cartao.getNome(), formatarValor(valorReal));
+                }
+
+                projecoes.add(new ProjecaoCartaoDTO(
+                        cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
+                        "FECHADA", valorAtualMes, valorReal, false,
+                        valorReal, mediaHistorica, mesesHistorico,
+                        desvioPercentual, classificacao, mensagem,
+                        (int) hoje.lengthOfMonth(), (int) diasPassados
+                ));
+
+            } else {
+                // ── FATURA ABERTA ou SEM FATURA ──────────────────────────
+                String statusFatura = faturaAtualOpt.isPresent() ? "ABERTA" : "SEM_FATURA";
+
+                if (diasPassados >= 3 && valorAtualMes.compareTo(BigDecimal.ZERO) > 0) {
+                    // Coletar dados para chamada em batch à IA
+                    BigDecimal mediaDiaria = valorAtualMes
+                            .divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP);
+                    BigDecimal projecaoExtrapolada = mediaDiaria
+                            .multiply(BigDecimal.valueOf(hoje.lengthOfMonth()))
+                            .setScale(2, RoundingMode.HALF_UP);
+
+                    // Top categorias do mês
+                    Map<String, BigDecimal> topCategorias = transacoesMes.stream()
+                            .filter(t -> t.getCategoria() != null)
+                            .collect(Collectors.groupingBy(
+                                    t -> t.getCategoria().getNome(),
+                                    Collectors.reducing(BigDecimal.ZERO, Transacao::getValor, BigDecimal::add)
+                            ));
+
+                    // Ordenar por valor desc e pegar top 5
+                    String topCategoriasStr = topCategorias.entrySet().stream()
+                            .sorted(Map.Entry.<String, BigDecimal>comparingByValue().reversed())
+                            .limit(5)
+                            .map(e -> e.getKey() + " " + formatarValor(e.getValue()))
+                            .collect(Collectors.joining(", "));
+
+                    Map<String, Object> dadoCartao = new HashMap<>();
+                    dadoCartao.put("cartaoId", cartao.getId());
+                    dadoCartao.put("cartaoNome", cartao.getNome());
+                    dadoCartao.put("corHexadecimal", cartao.getCorHexadecimal() != null ? cartao.getCorHexadecimal() : "");
+                    dadoCartao.put("mediaHistorica", mediaHistorica != null ? mediaHistorica : BigDecimal.ZERO);
+                    dadoCartao.put("gastoMes", valorAtualMes);
+                    dadoCartao.put("diasPassados", diasPassados);
+                    dadoCartao.put("diasNoMes", (long) hoje.lengthOfMonth());
+                    dadoCartao.put("projecaoExtrapolada", projecaoExtrapolada);
+                    dadoCartao.put("topCategoriasStr", topCategoriasStr);
+                    dadoCartao.put("statusFatura", statusFatura);
+                    dadoCartao.put("mesesHistorico", (long) mesesHistorico);
+                    dadosParaIa.add(dadoCartao);
+
+                } else if (faturaAtualOpt.isPresent() && diasPassados < 3) {
+                    // ── < 3 dias no mês: extrapolation simples sem IA ──
+                    BigDecimal projecao = valorAtualMes.compareTo(BigDecimal.ZERO) > 0 && diasPassados > 0
+                            ? valorAtualMes.divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP)
+                                    .multiply(BigDecimal.valueOf(hoje.lengthOfMonth()))
+                                    .setScale(2, RoundingMode.HALF_UP)
+                            : BigDecimal.ZERO;
+
+                    BigDecimal desvioPercentual = null;
+                    String classificacao = "PRIMEIRO_MES";
+                    String mensagem = String.format(
+                            "Projection initial for %s: %s (only %d days of data).",
+                            cartao.getNome(), formatarValor(projecao), diasPassados);
+
+                    if (mediaHistorica != null && mediaHistorica.compareTo(BigDecimal.ZERO) > 0
+                            && projecao.compareTo(BigDecimal.ZERO) > 0) {
+                        desvioPercentual = projecao.subtract(mediaHistorica)
+                                .divide(mediaHistorica, 4, RoundingMode.HALF_UP)
+                                .multiply(BigDecimal.valueOf(100))
+                                .setScale(1, RoundingMode.HALF_UP);
+                        double desvio = desvioPercentual.doubleValue();
+                        if (desvio > 10.0) {
+                            classificacao = "ACIMA";
+                        } else if (desvio < -10.0) {
+                            classificacao = "ABAIXO";
+                        } else {
+                            classificacao = "DENTRO";
+                        }
+                        mensagem = String.format(
+                                "In this pace, the %s invoice will close at %s (%d%% vs average of %s).",
+                                cartao.getNome(), formatarValor(projecao),
+                                Math.abs(Math.round(desvio)), formatarValor(mediaHistorica));
+                    }
+
+                    projecoes.add(new ProjecaoCartaoDTO(
+                            cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
+                            statusFatura, valorAtualMes, projecao, false,
+                            null, mediaHistorica, mesesHistorico,
+                            desvioPercentual, classificacao, mensagem,
+                            (int) hoje.lengthOfMonth(), (int) diasPassados
+                    ));
+
+                } else {
+                    // ── Cartão sem gastos ou novo ──
+                    String classificacao = mesesHistorico == 0 ? "NOVO" : "SEM_DADOS";
+                    String mensagem = mesesHistorico == 0
+                            ? String.format("Cartão %s sem histórico de faturas fechadas.", cartao.getNome())
+                            : String.format("No spending recorded this month for %s.", cartao.getNome());
+
+                    projecoes.add(new ProjecaoCartaoDTO(
+                            cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
+                            statusFatura, valorAtualMes, BigDecimal.ZERO, false,
+                            null, mediaHistorica, mesesHistorico,
+                            null, classificacao, mensagem,
+                            (int) hoje.lengthOfMonth(), (int) diasPassados
+                    ));
+                }
+            }
+        }
+
+        // 6. Chamar IA uma única vez para todos os cartões ABERTOS com dados suficientes
+        boolean dadosInsuficientes = false;
+        if (!dadosParaIa.isEmpty()) {
+            try {
+                Map<UUID, BigDecimal> projecoesIa = chamarIaParaProjecao(dadosParaIa);
+
+                // Atualizar as projeções com os valores da IA
+                for (int i = 0; i < projecoes.size(); i++) {
+                    ProjecaoCartaoDTO p = projecoes.get(i);
+                    if (projecoesIa.containsKey(p.cartaoId())) {
+                        BigDecimal valorIa = projecoesIa.get(p.cartaoId());
+                        BigDecimal desvio = null;
+                        String classificacao = p.classificacao();
+                        String mensagem = p.mensagemResumo();
+
+                        if (p.mediaHistorica() != null && p.mediaHistorica().compareTo(BigDecimal.ZERO) > 0) {
+                            desvio = valorIa.subtract(p.mediaHistorica())
+                                    .divide(p.mediaHistorica(), 4, RoundingMode.HALF_UP)
+                                    .multiply(BigDecimal.valueOf(100))
+                                    .setScale(1, RoundingMode.HALF_UP);
+                            double desvioDbl = desvio.doubleValue();
+                            if (desvioDbl > 10.0) {
+                                classificacao = "ACIMA";
+                                mensagem = String.format(
+                                        "Neste ritmo, a fatura do %s fechará em %s — %d%% acima da sua média dos últimos %d meses (%s).",
+                                        p.cartaoNome(), formatarValor(valorIa),
+                                        Math.abs(Math.round(desvioDbl)), p.mesesHistorico(), formatarValor(p.mediaHistorica()));
+                            } else if (desvioDbl < -10.0) {
+                                classificacao = "ABAIXO";
+                                mensagem = String.format(
+                                        "Neste ritmo, a fatura do %s fechará em %s — %d%% abaixo da sua média dos últimos %d meses (%s).",
+                                        p.cartaoNome(), formatarValor(valorIa),
+                                        Math.abs(Math.round(desvioDbl)), p.mesesHistorico(), formatarValor(p.mediaHistorica()));
+                            } else {
+                                classificacao = "DENTRO";
+                                mensagem = String.format(
+                                        "Neste ritmo, a fatura do %s fechará em %s, dentro da faixa esperada (média: %s).",
+                                        p.cartaoNome(), formatarValor(valorIa), formatarValor(p.mediaHistorica()));
+                            }
+                        }
+
+                        projecoes.set(i, new ProjecaoCartaoDTO(
+                                p.cartaoId(), p.cartaoNome(), p.corHexadecimal(),
+                                p.statusFatura(), p.valorAtualNoMes(), valorIa, true,
+                                p.valorRealFechado(), p.mediaHistorica(), p.mesesHistorico(),
+                                desvio, classificacao, mensagem,
+                                p.diasNoMes(), p.diasPassados()
+                        ));
+                    }
+                }
+            } catch (Exception e) {
+                // Fallback: usar extrapolation linear (já calculada)
+                dadosInsuficientes = true;
+            }
+        }
+
+        return new ProjecaoCartoesResponse(projecoes, cartoes.size(), dadosInsuficientes);
+    }
+
+    /**
+     * Envia os dados agregados de TODOS os cartões abertos para a IA em uma única chamada.
+     * Retorna Map<cartaoId, valorProjetado>.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<UUID, BigDecimal> chamarIaParaProjecao(List<Map<String, Object>> dadosParaIa) throws Exception {
+        if (openAiApiKey == null || openAiApiKey.trim().isEmpty()) {
+            throw new IllegalStateException("OpenAI API Key não configurada.");
+        }
+
+        StringBuilder userContent = new StringBuilder();
+        userContent.append("Dados para projeção de faturas:\n\n");
+
+        for (Map<String, Object> dado : dadosParaIa) {
+            UUID cartaoId = (UUID) dado.get("cartaoId");
+            String cartaoNome = (String) dado.get("cartaoNome");
+            BigDecimal mediaHist = (BigDecimal) dado.get("mediaHistorica");
+            BigDecimal gastoMes = (BigDecimal) dado.get("gastoMes");
+            long diasPassados = (long) dado.get("diasPassados");
+            long diasNoMes = (long) dado.get("diasNoMes");
+            BigDecimal projExtrapolada = (BigDecimal) dado.get("projecaoExtrapolada");
+            String topCategorias = (String) dado.get("topCategoriasStr");
+
+            userContent.append(String.format(
+                    "Cartão '%s' (ID: %s):\n" +
+                    "- Média histórica 6 meses: %s\n" +
+                    "- Gasto acumulado no mês: %s\n" +
+                    "- Dias passados: %d de %d\n" +
+                    "- Projeção por extrapolation linear: %s\n" +
+                    "- Top categorias: %s\n\n",
+                    cartaoNome, cartaoId,
+                    formatarValor(mediaHist), formatarValor(gastoMes),
+                    diasPassados, diasNoMes,
+                    formatarValor(projExtrapolada), topCategorias
+            ));
+        }
+
+        userContent.append("Retorne APENAS um JSON no formato: " +
+                "{\"projecoes\":[{\"cartaoId\":\"<uuid>\",\"valor\":<numero>}]}\n" +
+                "Use o valor projetado de fechamento realista, considerando padrões de gastos " +
+                "e a média histórica. Não apenas extrapolação linear — ajuste se os gastos " +
+                "estiverem concentrados em categorias variáveis vs fixas.");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Bearer " + openAiApiKey);
+
+        Map<String, Object> messageSystem = new HashMap<>();
+        messageSystem.put("role", "system");
+        messageSystem.put("content",
+                "Você é um assistente financeiro previsor de gastos com cartão de crédito. " +
+                "Analise os dados de cada cartão fornecidos e retorne APENAS um JSON válido com " +
+                "os valores projetados de fechamento de fatura. Considere a média histórica, " +
+                "o ritmo atual de gastos, e a natureza das categorias (gastos fixos vs variáveis). " +
+                "IMPORTANTE: Retorne APENAS o JSON, sem texto adicional, sem markdown.");
+
+        Map<String, Object> messageUser = new HashMap<>();
+        messageUser.put("role", "user");
+        messageUser.put("content", userContent.toString());
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", openAiModel);
+        requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
+        requestBody.put("temperature", 0.1);
+        requestBody.put("max_tokens", 300);
+
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                openAiBaseUrl + "/chat/completions", entity, String.class);
+
+        Map<UUID, BigDecimal> resultado = new HashMap<>();
+
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            Map<?, ?> responseMap = objectMapper.readValue(response.getBody(), Map.class);
+            List<?> choices = (List<?>) responseMap.get("choices");
+            if (choices != null && !choices.isEmpty()) {
+                Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+                Map<?, ?> message = (Map<?, ?>) choice.get("message");
+                String content = ((String) message.get("content")).trim();
+                // Limpar possíveis wrapping de markdown
+                content = content.replaceAll("```json", "").replaceAll("```", "").trim();
+
+                Map<?, ?> parsed = objectMapper.readValue(content, Map.class);
+                List<?> projecoesLista = (List<?>) parsed.get("projecoes");
+                if (projecoesLista != null) {
+                    for (Object item : projecoesLista) {
+                        Map<?, ?> proj = (Map<?, ?>) item;
+                        UUID id = UUID.fromString((String) proj.get("cartaoId"));
+                        BigDecimal valor = new BigDecimal(proj.get("valor").toString());
+                        resultado.put(id, valor);
+                    }
+                }
+            }
+        }
+
+        return resultado;
     }
 
     // ═══════════════════════════════════════════════════════════════════

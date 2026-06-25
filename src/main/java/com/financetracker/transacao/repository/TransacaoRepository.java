@@ -69,4 +69,31 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
                                               @Param("inicio") LocalDate inicio,
                                               @Param("fim") LocalDate fim,
                                               @Param("tipos") List<TipoTransacao> tipos);
+
+    // ── Novas queries para insights comportamentais ───────────────────────────
+
+    /** Conta o número de transações ativas de uma categoria no período (qualquer tipo). */
+    @Query("SELECT COUNT(t) FROM Transacao t WHERE t.usuario.id = :usuarioId " +
+           "AND t.ativo = true AND t.categoria.id = :categoriaId " +
+           "AND t.data BETWEEN :inicio AND :fim")
+    long countByCategoriaAndPeriodo(@Param("usuarioId") UUID usuarioId,
+                                     @Param("categoriaId") UUID categoriaId,
+                                     @Param("inicio") LocalDate inicio,
+                                     @Param("fim") LocalDate fim);
+
+    /** Soma o valor de todas as transações ativas de uma categoria no período (qualquer tipo). */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.usuario.id = :usuarioId " +
+           "AND t.ativo = true AND t.categoria.id = :categoriaId " +
+           "AND t.data BETWEEN :inicio AND :fim")
+    BigDecimal sumValorByCategoriaAndPeriodoSemFiltroTipo(@Param("usuarioId") UUID usuarioId,
+                                                           @Param("categoriaId") UUID categoriaId,
+                                                           @Param("inicio") LocalDate inicio,
+                                                           @Param("fim") LocalDate fim);
+
+    /** Soma o valor total de todas as transações ativas do usuário no período (qualquer tipo). */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.usuario.id = :usuarioId " +
+           "AND t.ativo = true AND t.data BETWEEN :inicio AND :fim")
+    BigDecimal sumValorTotalByPeriodo(@Param("usuarioId") UUID usuarioId,
+                                       @Param("inicio") LocalDate inicio,
+                                       @Param("fim") LocalDate fim);
 }

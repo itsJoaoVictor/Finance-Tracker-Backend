@@ -10,5 +10,15 @@ public enum TipoInsight {
     ASSINATURA_ESQUECIDA,
     SUGESTAO_VENCIMENTO,
     ESTOURO_FATURA,
-    AVISO_FECHAMENTO
+    AVISO_FECHAMENTO,
+
+    // ── Novos insights (expansão comportamental) ──────────────────────
+    MICRO_TRANSACOES,
+    ORCAMENTO_SOBRA_META,
+    DINHEIRO_DORMINDO,
+    RADAR_FIM_SEMANA,
+    QUEDA_RECEITA,
+    REFORCO_POSITIVO,
+    ACELERADOR_METAS,
+    INFLACAO_PESSOAL
 }

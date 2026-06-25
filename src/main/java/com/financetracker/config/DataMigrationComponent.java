@@ -7,6 +7,7 @@ import com.financetracker.transacao.repository.FaturaRepository;
 import com.financetracker.transacao.repository.TransacaoRepository;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,11 +25,59 @@ public class DataMigrationComponent {
 
     private final FaturaRepository faturaRepository;
     private final TransacaoRepository transacaoRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public DataMigrationComponent(FaturaRepository faturaRepository,
-                                   TransacaoRepository transacaoRepository) {
+                                   TransacaoRepository transacaoRepository,
+                                   JdbcTemplate jdbcTemplate) {
         this.faturaRepository = faturaRepository;
         this.transacaoRepository = transacaoRepository;
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    /**
+     * Migração: atualiza o CHECK constraint da tabela ia_insights
+     * para incluir os 8 novos tipos de insight comportamental.
+     * Executa apenas uma vez (verifica se o constraint antigo existe).
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void migrarCheckConstraintIaInsights() {
+        System.out.println("[DataMigration] Verificando CHECK constraint da tabela ia_insights...");
+
+        try {
+            // Verifica se o constraint antigo existe (contém apenas os 10 tipos originais)
+            String checkSql = """
+                SELECT pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE conname = 'ia_insights_tipo_check'
+                AND conrelid = 'ia_insights'::regclass
+                """;
+            String constraintDef = jdbcTemplate.queryForObject(checkSql, String.class);
+
+            if (constraintDef != null && !constraintDef.contains("DINHEIRO_DORMINDO")) {
+                System.out.println("[DataMigration] Constraint antigo detectado. Atualizando...");
+
+                jdbcTemplate.execute("ALTER TABLE ia_insights DROP CONSTRAINT IF EXISTS ia_insights_tipo_check");
+
+                jdbcTemplate.execute("""
+                    ALTER TABLE ia_insights ADD CONSTRAINT ia_insights_tipo_check CHECK (tipo IN (
+                        'CARTAO_PREVISAO', 'COBRANCA_DUPLICADA', 'PROJECAO_PARCELAS',
+                        'MELHOR_CARTAO', 'FADIGA_ASSINATURA', 'REAJUSTE_SILENCIOSO',
+                        'ASSINATURA_ESQUECIDA', 'SUGESTAO_VENCIMENTO', 'ESTOURO_FATURA',
+                        'AVISO_FECHAMENTO', 'MICRO_TRANSACOES', 'ORCAMENTO_SOBRA_META',
+                        'DINHEIRO_DORMINDO', 'RADAR_FIM_SEMANA', 'QUEDA_RECEITA',
+                        'REFORCO_POSITIVO', 'ACELERADOR_METAS', 'INFLACAO_PESSOAL'
+                    ))
+                    """);
+
+                System.out.println("[DataMigration] CHECK constraint atualizado com sucesso!");
+            } else {
+                System.out.println("[DataMigration] CHECK constraint já está atualizado.");
+            }
+        } catch (Exception e) {
+            System.out.println("[DataMigration] Aviso ao verificar CHECK constraint: " + e.getMessage());
+        }
     }
 
     /**

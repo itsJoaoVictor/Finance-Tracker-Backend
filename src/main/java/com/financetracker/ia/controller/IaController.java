@@ -1,6 +1,7 @@
 package com.financetracker.ia.controller;
 
 import com.financetracker.ia.domain.IaInsight;
+import com.financetracker.ia.dto.ProjecaoCartoesResponse;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.ia.service.IaService;
 import com.financetracker.usuario.entity.Usuario;
@@ -190,6 +191,40 @@ public class IaController {
         // Processa RN-05, RN-06
         iaService.processarInsightsAssinaturaParaUsuario(usuarioOpt.get());
         return ResponseEntity.ok(Map.of("message", "Insights de Assinaturas reprocessados com sucesso!"));
+    }
+
+    // ─── Projeção de Faturas (dedicada) ────────────────────────────────
+
+    /**
+     * Endpoint dedicado para projeção/comparação de faturas de TODOS os cartões.
+     * Chamado ao entrar em /cartoes, ao cadastrar transação, e ao clicar "Analisar com IA".
+     */
+    @PostMapping("/projecao-cartoes")
+    public ResponseEntity<?> projetarCartoes(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        ProjecaoCartoesResponse response = iaService.projetarFaturasParaUsuario(usuarioOpt.get());
+        return ResponseEntity.ok(response);
+    }
+
+    // ─── Aviso de Fechamento Iminente (dedicado) ──────────────────────
+
+    /**
+     * Endpoint dedicado para alertar sobre fechamento de fatura em 0-5 dias.
+     * Chamado ao entrar na tela /cartoes.
+     */
+    @PostMapping("/aviso-fechamento")
+    public ResponseEntity<?> verificarAvisosFechamento(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        iaService.processarAvisoFechamentoParaUsuario(usuarioOpt.get());
+        return ResponseEntity.ok(Map.of("message", "Avisos de fechamento processados com sucesso!"));
     }
 
     // ─── RN-03: Simulação de Compra Parcelada ─────────────────────────
