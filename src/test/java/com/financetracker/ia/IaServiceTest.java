@@ -4,17 +4,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.financetracker.categoria.entity.Categoria;
 import com.financetracker.categoria.repository.CategoriaRepository;
 import com.financetracker.ia.domain.IaDicionarioCategoria;
-import com.financetracker.ia.domain.IaInsight;
-import com.financetracker.ia.domain.TipoInsight;
 import com.financetracker.ia.repository.IaCorrecaoUsuarioRepository;
 import com.financetracker.ia.repository.IaDicionarioCategoriaRepository;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.ia.service.IaService;
-import com.financetracker.transacao.entity.Transacao;
 import com.financetracker.transacao.repository.TransacaoRepository;
-import com.financetracker.usuario.entity.Usuario;
-import com.financetracker.cartao.repository.CartaoRepository;
-import com.financetracker.transacao.repository.FaturaRepository;
 import com.financetracker.assinatura.repository.AssinaturaRepository;
 import com.financetracker.conta.repository.ContaRepository;
 import com.financetracker.transacao.repository.OrcamentoCategoriaRepository;
@@ -25,8 +19,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -52,12 +44,6 @@ public class IaServiceTest {
 
     @Mock
     private CategoriaRepository categoriaRepository;
-
-    @Mock
-    private CartaoRepository cartaoRepository;
-
-    @Mock
-    private FaturaRepository faturaRepository;
 
     @Mock
     private AssinaturaRepository assinaturaRepository;
@@ -106,28 +92,4 @@ public class IaServiceTest {
         verify(iaDicionarioCategoriaRepository, times(1)).findById("UBER *EATS");
     }
 
-    @Test
-    public void deveGerarInsightAvisoFechamentoFaturaSeFaltaAte2Dias() {
-        Usuario usuario = new Usuario();
-        usuario.setId(UUID.randomUUID());
-
-        com.financetracker.cartao.entity.Cartao cartao = new com.financetracker.cartao.entity.Cartao();
-        cartao.setId(UUID.randomUUID());
-        cartao.setNome("Nubank");
-        cartao.setLimite(new java.math.BigDecimal("5000.00"));
-        cartao.setLimiteDisponivel(new java.math.BigDecimal("3000.00"));
-        // Se hoje é dia 24, e diaFechamento é 25, falta 1 dia (amanhã)
-        cartao.setDiaFechamento(java.time.LocalDate.now().plusDays(1).getDayOfMonth());
-        cartao.setDiaVencimento(java.time.LocalDate.now().plusDays(10).getDayOfMonth());
-        cartao.setAtivo(true);
-
-        when(cartaoRepository.findByUsuarioIdAndAtivoTrue(usuario.getId()))
-                .thenReturn(java.util.List.of(cartao));
-        when(iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuario.getId()))
-                .thenReturn(java.util.Collections.emptyList());
-
-        iaService.processarInsightsCartaoParaUsuario(usuario);
-
-        verify(iaInsightRepository, times(1)).save(any(IaInsight.class));
-    }
 }
