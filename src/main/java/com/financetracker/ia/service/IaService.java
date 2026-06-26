@@ -3,28 +3,21 @@ package com.financetracker.ia.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.financetracker.assinatura.entity.Assinatura;
 import com.financetracker.assinatura.repository.AssinaturaRepository;
-import com.financetracker.cartao.entity.Cartao;
-import com.financetracker.cartao.repository.CartaoRepository;
 import com.financetracker.categoria.entity.Categoria;
 import com.financetracker.categoria.repository.CategoriaRepository;
 import com.financetracker.ia.domain.*;
-import com.financetracker.ia.dto.ProjecaoCartaoDTO;
-import com.financetracker.ia.dto.ProjecaoCartoesResponse;
 import com.financetracker.ia.repository.IaCorrecaoUsuarioRepository;
 import com.financetracker.ia.repository.IaDicionarioCategoriaRepository;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.model.TipoConta;
 import com.financetracker.conta.repository.ContaRepository;
-import com.financetracker.transacao.entity.Fatura;
 import com.financetracker.transacao.entity.MetasEconomia;
 import com.financetracker.transacao.entity.OrcamentoCategoria;
 import com.financetracker.transacao.entity.Transacao;
-import com.financetracker.transacao.enums.StatusFatura;
 import com.financetracker.transacao.repository.MetasEconomiaRepository;
 import com.financetracker.transacao.repository.OrcamentoCategoriaRepository;
 import com.financetracker.transacao.enums.TipoTransacao;
-import com.financetracker.transacao.repository.FaturaRepository;
 import com.financetracker.transacao.repository.TransacaoRepository;
 import com.financetracker.usuario.entity.Usuario;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,7 +29,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -49,10 +41,8 @@ public class IaService {
     private final IaDicionarioCategoriaRepository iaDicionarioCategoriaRepository;
     private final IaCorrecaoUsuarioRepository iaCorrecaoUsuarioRepository;
     private final TransacaoRepository transacaoRepository;
-    private final CartaoRepository cartaoRepository;
     private final CategoriaRepository categoriaRepository;
     private final AssinaturaRepository assinaturaRepository;
-    private final FaturaRepository faturaRepository;
     private final ContaRepository contaRepository;
     private final OrcamentoCategoriaRepository orcamentoRepository;
     private final MetasEconomiaRepository metasRepository;
@@ -73,19 +63,12 @@ public class IaService {
     private static final Pattern CPF_PATTERN = Pattern.compile("\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}");
     private static final Pattern CARD_PATTERN = Pattern.compile("\\b\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}[-\\s]?\\d{4}\\b");
 
-    // Status de faturas que representam meses realmente gastos (para cálculo de média histórica)
-    private static final Set<StatusFatura> STATUS_FECHADOS = Set.of(
-            StatusFatura.FECHADA, StatusFatura.PAGA, StatusFatura.PAGA_PARCIAL, StatusFatura.ATRASADA
-    );
-
     public IaService(IaInsightRepository iaInsightRepository,
                      IaDicionarioCategoriaRepository iaDicionarioCategoriaRepository,
                      IaCorrecaoUsuarioRepository iaCorrecaoUsuarioRepository,
                      TransacaoRepository transacaoRepository,
-                     CartaoRepository cartaoRepository,
                      CategoriaRepository categoriaRepository,
                      AssinaturaRepository assinaturaRepository,
-                     FaturaRepository faturaRepository,
                      ContaRepository contaRepository,
                      OrcamentoCategoriaRepository orcamentoRepository,
                      MetasEconomiaRepository metasRepository,
@@ -94,10 +77,8 @@ public class IaService {
         this.iaDicionarioCategoriaRepository = iaDicionarioCategoriaRepository;
         this.iaCorrecaoUsuarioRepository = iaCorrecaoUsuarioRepository;
         this.transacaoRepository = transacaoRepository;
-        this.cartaoRepository = cartaoRepository;
         this.categoriaRepository = categoriaRepository;
         this.assinaturaRepository = assinaturaRepository;
-        this.faturaRepository = faturaRepository;
         this.contaRepository = contaRepository;
         this.orcamentoRepository = orcamentoRepository;
         this.metasRepository = metasRepository;
@@ -315,7 +296,11 @@ public class IaService {
                                     "' no valor de R$ " + transacao.getValor() + " em um curto intervalo de tempo. Foi um engano?",
                             checkMetadados
                     );
-                    iaInsightRepository.save(insight);
+                    try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
                 }
                 break;
             }
@@ -341,11 +326,10 @@ public class IaService {
     }
 
     /**
-     * Executa RN-01, RN-09, RN-11 para o usuário.
+     * Executa RN-02, RN-09 para o usuário (categorização e assinaturas ficam em fluxos separados).
      */
     public void processarInsightsParaUsuario(Usuario usuario) {
         limparInsightsOrfaos(usuario.getId());
-        processarInsightsCartaoParaUsuario(usuario);
         processarInsightsAssinaturaParaUsuario(usuario);
         processarTrialHunter(usuario);
 
@@ -411,7 +395,15 @@ public class IaService {
                             categoria.getId(), categoria.getNome(), qtdTransacoes,
                             totalCategoria.doubleValue(), valorMedio.doubleValue())
             );
-            iaInsightRepository.save(insight);
+            try {
+                try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
         }
     }
 
@@ -469,7 +461,11 @@ public class IaService {
                             orcamento.getLimiteMensal().doubleValue(), gastoMes.doubleValue(),
                             sobra.doubleValue(), meta.getId(), meta.getNome())
             );
-            iaInsightRepository.save(insight);
+            try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
         }
     }
 
@@ -517,7 +513,11 @@ public class IaService {
                             "{\"contaId\":\"%s\",\"conta\":\"%s\",\"saldo\":%.2f,\"diasParado\":15}",
                             conta.getId(), conta.getNome(), conta.getSaldo().doubleValue())
             );
-            iaInsightRepository.save(insight);
+            try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
         }
     }
 
@@ -578,7 +578,11 @@ public class IaService {
                                 "{\"categoriaId\":\"%s\",\"diaSemana\":\"%s\",\"percentual\":%.0f,\"totalNoDia\":%d}",
                                 categoria.getId(), nomeDia, percentual, entry.getValue())
                 );
+                try {
                 iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
             }
         }
     }
@@ -709,7 +713,11 @@ public class IaService {
                                 String.join(" | ", mesesStatus)),
                         "{\"tipoReforco\":\"streak\",\"mesesConsecutivos\":3}"
                 );
+                try {
                 iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
             }
         }
     }
@@ -764,7 +772,11 @@ public class IaService {
                                 meta.getId(), meta.getNome(), gastoMes.doubleValue(),
                                 categoria.getNome(), mesesAtrasados)
                 );
+                try {
                 iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
             }
         }
     }
@@ -832,329 +844,10 @@ public class IaService {
                             categoria.getId(), projetado.doubleValue(),
                             gastoMesAnterior.doubleValue(), variacaoPercentual)
             );
-            iaInsightRepository.save(insight);
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // RN-01 / RN-04 / RN-11 — ANÁLISE DE CARTÕES
-    // ═══════════════════════════════════════════════════════════════════
-
-    public void processarInsightsCartaoParaUsuario(Usuario usuario) {
-        UUID usuarioId = usuario.getId();
-        LocalDate hoje = LocalDate.now();
-        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
-
-        // Limpar alertas de duplicata cujas transações foram excluídas
-        limparInsightsOrfaos(usuarioId);
-
-        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
-        LocalDate inicioMes = hoje.withDayOfMonth(1);
-
-        for (Cartao cartao : cartoes) {
-
-            // ─── RN-01: ANÁLISE DA FATURA (ABERTA = previsão | FECHADA = comparação histórica) ─
-            //
-            // Regras:
-            // • Fatura ABERTA:  dispara previsão se ritmo >= 15% acima da média histórica (6 meses)
-            //                   somente após dia 10 do mês e com ao menos algum gasto primário
-            // • Fatura FECHADA: compara o valorTotal real com a média de 6 meses e informa se
-            //                   ficou acima, abaixo ou dentro da faixa esperada (sem "previsão")
-            // Em ambos os casos: filtra apenas COMPRA_CREDITO primárias (numeroParcela null ou 1)
-
-            // Calcular média histórica dos últimos 6 meses (sempre, para ambos os caminhos)
-            LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
-            List<Fatura> faturasFechadas = faturaRepository
-                    .findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuarioId)
-                    .stream()
-                    .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
-                    .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
-                    .filter(f -> f.getMesReferencia().isBefore(inicioMes))
-                    .collect(Collectors.toList());
-
-            BigDecimal mediaMensalHistorica;
-            if (!faturasFechadas.isEmpty()) {
-                BigDecimal totalHistorico = faturasFechadas.stream()
-                        .map(Fatura::getValorTotal)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add);
-                mediaMensalHistorica = totalHistorico
-                        .divide(BigDecimal.valueOf(faturasFechadas.size()), 2, RoundingMode.HALF_UP);
-            } else {
-                mediaMensalHistorica = null; // sem histórico suficiente: não gerar insight
-            }
-
-            // Verificar se a fatura do mês atual está ABERTA ou FECHADA
-            Optional<Fatura> faturaAtualOpt = faturaRepository
-                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, inicioMes);
-
-            boolean faturaAtualFechada = faturaAtualOpt
-                    .map(f -> STATUS_FECHADOS.contains(f.getStatus()))
-                    .orElse(false);
-
-            boolean jaExistePrevisao = insightsExistentes.stream()
-                    .anyMatch(ins -> ins.getTipo() == TipoInsight.CARTAO_PREVISAO
-                            && ins.getMetadados() != null
-                            && ins.getMetadados().contains(cartao.getId().toString()));
-
-            if (!jaExistePrevisao && mediaMensalHistorica != null) {
-
-                if (faturaAtualFechada) {
-                    // ── Caminho A: FATURA FECHADA — comparação real vs histórico ──────────────
-                    // Usa o valorTotal real da fatura fechada para comparar com a média
-                    BigDecimal valorFaturaFechada = faturaAtualOpt.get().getValorTotal();
-                    if (valorFaturaFechada.compareTo(BigDecimal.ZERO) > 0) {
-                        BigDecimal desvio = valorFaturaFechada.subtract(mediaMensalHistorica);
-                        double percentualDesvio = desvio
-                                .divide(mediaMensalHistorica, 4, RoundingMode.HALF_UP)
-                                .multiply(BigDecimal.valueOf(100)).doubleValue();
-
-                        String titulo;
-                        String mensagem;
-                        if (percentualDesvio > 15.0) {
-                            titulo = "Fatura Acima da Média";
-                            mensagem = String.format(
-                                    "A fatura do %s fechou em R$ %.2f — %.0f%% acima da sua média dos últimos 6 meses (R$ %.2f).",
-                                    cartao.getNome(), valorFaturaFechada,
-                                    percentualDesvio, mediaMensalHistorica);
-                        } else if (percentualDesvio < -15.0) {
-                            titulo = "Fatura Abaixo da Média";
-                            mensagem = String.format(
-                                    "Ótimo! A fatura do %s fechou em R$ %.2f — %.0f%% abaixo da sua média dos últimos 6 meses (R$ %.2f). Continue assim!",
-                                    cartao.getNome(), valorFaturaFechada,
-                                    Math.abs(percentualDesvio), mediaMensalHistorica);
-                        } else {
-                            // Dentro da faixa normal: não gerar insight (não é relevante)
-                            titulo = null;
-                            mensagem = null;
-                        }
-
-                        if (titulo != null) {
-                            IaInsight insight = new IaInsight(
-                                    usuario,
-                                    TipoInsight.CARTAO_PREVISAO,
-                                    titulo,
-                                    mensagem,
-                                    "{\"cartaoId\":\"" + cartao.getId() + "\",\"realizado\":" + valorFaturaFechada + ",\"mediaHistorica\":" + mediaMensalHistorica + ",\"mesesHistorico\":" + faturasFechadas.size() + ",\"faturada\":true}"
-                            );
-                            iaInsightRepository.save(insight);
-                        }
-                    }
-
-                } else {
-                    // ── Caminho B: FATURA ABERTA — projeção de fechamento ─────────────────────
-                    // Só analisa a partir do dia 10 do mês (dados suficientes)
-                    long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
-                    if (diasPassados >= 10) {
-                        List<Transacao> transacoesMes = transacaoRepository
-                                .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
-                                .stream()
-                                .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                                .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
-                                .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
-                                .collect(Collectors.toList());
-
-                        BigDecimal totalGastosMes = transacoesMes.stream()
-                                .map(Transacao::getValor)
-                                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-                        if (totalGastosMes.compareTo(BigDecimal.ZERO) > 0) {
-                            BigDecimal mediaDiaria = totalGastosMes.divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP);
-                            BigDecimal fechamentoProjetado = mediaDiaria.multiply(BigDecimal.valueOf(hoje.lengthOfMonth())).setScale(2, RoundingMode.HALF_UP);
-                            BigDecimal limiarAlerta = mediaMensalHistorica.multiply(BigDecimal.valueOf(1.15)).setScale(2, RoundingMode.HALF_UP);
-
-                            if (fechamentoProjetado.compareTo(limiarAlerta) > 0) {
-                                double percentualAcima = ((fechamentoProjetado.subtract(mediaMensalHistorica))
-                                        .divide(mediaMensalHistorica, 4, RoundingMode.HALF_UP)
-                                        .multiply(BigDecimal.valueOf(100))).doubleValue();
-
-                                String mensagem = String.format(
-                                        "Neste ritmo, a fatura do %s fechará em R$ %.2f — %.0f%% acima da sua média dos últimos 6 meses (R$ %.2f). Pise no freio.",
-                                        cartao.getNome(), fechamentoProjetado,
-                                        percentualAcima, mediaMensalHistorica);
-
-                                IaInsight insight = new IaInsight(
-                                        usuario,
-                                        TipoInsight.CARTAO_PREVISAO,
-                                        "Previsão de Fatura Acima do Histórico",
-                                        mensagem,
-                                        "{\"cartaoId\":\"" + cartao.getId() + "\",\"projetado\":" + fechamentoProjetado + ",\"mediaHistorica\":" + mediaMensalHistorica + ",\"mesesHistorico\":" + faturasFechadas.size() + ",\"faturada\":false}"
-                                );
-                                iaInsightRepository.save(insight);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ─── RN-04: MELHOR CARTÃO PARA O MOMENTO ──────────────────────────────────────
-            //
-            // Se a fatura deste cartão fechou nos últimos 0-2 dias, é o melhor momento para
-            // usá-lo (maximiza o prazo de pagamento: até ~40 dias de prazo).
-            int diaFechamento = cartao.getDiaFechamento();
-            int diaFechamentoEfetivo = Math.min(diaFechamento, hoje.lengthOfMonth());
-            LocalDate dataFechamentoNoMes = hoje.withDayOfMonth(diaFechamentoEfetivo);
-            long diasDesdeOFechamento = ChronoUnit.DAYS.between(dataFechamentoNoMes, hoje);
-
-            if (diasDesdeOFechamento >= 0 && diasDesdeOFechamento <= 2) {
-                boolean jaExiste = insightsExistentes.stream()
-                        .anyMatch(ins -> ins.getTipo() == TipoInsight.MELHOR_CARTAO
-                                && ins.getMetadados() != null
-                                && ins.getMetadados().contains(cartao.getId().toString()));
-
-                if (!jaExiste) {
-                    int diaVencimento = cartao.getDiaVencimento();
-                    IaInsight insight = new IaInsight(
-                            usuario,
-                            TipoInsight.MELHOR_CARTAO,
-                            "Melhor momento para usar o " + cartao.getNome(),
-                            String.format("A fatura do %s fechou %s. Compras feitas agora só vencem no dia %d do mês que vem — você tem até ~30 dias de prazo sem juros.",
-                                    cartao.getNome(),
-                                    diasDesdeOFechamento == 0 ? "hoje" : "há " + diasDesdeOFechamento + " dia(s)",
-                                    diaVencimento),
-                            "{\"cartaoId\":\"" + cartao.getId() + "\",\"diaVencimento\":" + diaVencimento + "}"
-                    );
-                    iaInsightRepository.save(insight);
-                }
-            }
-
-            // ─── RN-11: ALERTA DE ESTOURO DE FATURA / COMPROMETIMENTO DE LIMITE ──────────
-            BigDecimal limite = cartao.getLimite();
-            BigDecimal disponivel = cartao.getLimiteDisponivel();
-            if (limite.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal comprometido = limite.subtract(disponivel);
-                double percentualComprometido = comprometido
-                        .divide(limite, 4, RoundingMode.HALF_UP)
-                        .multiply(BigDecimal.valueOf(100)).doubleValue();
-
-                if (percentualComprometido >= 75.0) {
-                    boolean jaExiste = insightsExistentes.stream()
-                            .anyMatch(ins -> ins.getTipo() == TipoInsight.ESTOURO_FATURA
-                                    && ins.getMetadados() != null
-                                    && ins.getMetadados().contains(cartao.getId().toString()));
-
-                    if (!jaExiste) {
-                        IaInsight insight = new IaInsight(
-                                usuario,
-                                TipoInsight.ESTOURO_FATURA,
-                                "Alerta de Comprometimento de Limite",
-                                String.format("Atenção! %.0f%% do limite do seu cartão %s (R$ %.2f de R$ %.2f) está comprometido com compras parceladas.",
-                                        percentualComprometido, cartao.getNome(), comprometido, limite),
-                                "{\"cartaoId\":\"" + cartao.getId() + "\",\"comprometidoPercentual\":" + percentualComprometido + "}"
-                        );
-                        iaInsightRepository.save(insight);
-                    }
-                }
-            }
-
-            // ─── RN-15: ALERTA DE FECHAMENTO IMINENTE DE FATURA ──────────────────────────
-            LocalDate dataFechamentoAlerta = hoje.withDayOfMonth(diaFechamentoEfetivo);
-            if (hoje.isAfter(dataFechamentoAlerta)) {
-                LocalDate proximoMes = hoje.plusMonths(1);
-                int diaFechamentoEfetivoProximo = Math.min(diaFechamento, proximoMes.lengthOfMonth());
-                dataFechamentoAlerta = proximoMes.withDayOfMonth(diaFechamentoEfetivoProximo);
-            }
-
-            long diasParaFechamento = ChronoUnit.DAYS.between(hoje, dataFechamentoAlerta);
-            if (diasParaFechamento >= 0 && diasParaFechamento <= 2) {
-                boolean jaExiste = insightsExistentes.stream()
-                        .anyMatch(ins -> ins.getTipo() == TipoInsight.AVISO_FECHAMENTO
-                                && ins.getMetadados() != null
-                                && ins.getMetadados().contains(cartao.getId().toString()));
-
-                if (!jaExiste) {
-                    String titulo;
-                    String mensagem;
-                    if (diasParaFechamento == 0) {
-                        titulo = "Fatura Fecha Hoje";
-                        mensagem = String.format("Sua fatura do %s fecha hoje, recomendamos pausar gastos.", cartao.getNome());
-                    } else if (diasParaFechamento == 1) {
-                        titulo = "Fatura Fecha Amanhã";
-                        mensagem = String.format("Sua fatura do %s fecha amanhã, recomendamos pausar gastos.", cartao.getNome());
-                    } else {
-                        titulo = "Fatura Próxima de Fechar";
-                        mensagem = String.format("Sua fatura do %s está próxima de fechar, recomendamos pausar gastos.", cartao.getNome());
-                    }
-
-                    IaInsight insight = new IaInsight(
-                            usuario,
-                            TipoInsight.AVISO_FECHAMENTO,
-                            titulo,
-                            mensagem,
-                            "{\"cartaoId\":\"" + cartao.getId() + "\",\"diasParaFechamento\":" + diasParaFechamento + "}"
-                    );
-                    iaInsightRepository.save(insight);
-                }
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // AVISO DE FECHAMENTO IMINENTE (endpoint dedicado)
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Endpoint dedicado: verifica todos os cartões ativos e gera alertas
-     * de fechamento iminente quando a fatura fecha em 0-5 dias.
-     * Chamado ao entrar na tela /cartoes.
-     */
-    public void processarAvisoFechamentoParaUsuario(Usuario usuario) {
-        UUID usuarioId = usuario.getId();
-        LocalDate hoje = LocalDate.now();
-        List<IaInsight> insightsExistentes = iaInsightRepository
-                .findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
-
-        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
-
-        for (Cartao cartao : cartoes) {
-            int diaFechamento = cartao.getDiaFechamento();
-            int diaFechamentoEfetivo = Math.min(diaFechamento, hoje.lengthOfMonth());
-            LocalDate dataFechamentoNoMes = hoje.withDayOfMonth(diaFechamentoEfetivo);
-
-            // Se já passou do fechamento deste mês, calcular o do próximo
-            LocalDate dataFechamentoAlerta = dataFechamentoNoMes;
-            if (hoje.isAfter(dataFechamentoNoMes)) {
-                LocalDate proximoMes = hoje.plusMonths(1);
-                int diaFechamentoEfetivoProximo = Math.min(diaFechamento, proximoMes.lengthOfMonth());
-                dataFechamentoAlerta = proximoMes.withDayOfMonth(diaFechamentoEfetivoProximo);
-            }
-
-            long diasParaFechamento = ChronoUnit.DAYS.between(hoje, dataFechamentoAlerta);
-
-            // Threshold: 1-5 dias para fechamento (dia 0 = já fechou, sem sentido alertar)
-            if (diasParaFechamento >= 1 && diasParaFechamento <= 5) {
-                // Evitar duplicidade
-                boolean jaExiste = insightsExistentes.stream()
-                        .anyMatch(ins -> ins.getTipo() == TipoInsight.AVISO_FECHAMENTO
-                                && ins.getMetadados() != null
-                                && ins.getMetadados().contains(cartao.getId().toString()));
-
-                if (!jaExiste) {
-                    String titulo;
-                    String mensagem;
-                    if (diasParaFechamento == 1) {
-                        titulo = "Fatura Fecha Amanhã";
-                        mensagem = String.format(
-                                "A fatura do %s fecha amanhã. Cuidado com os últimos gastos.",
-                                cartao.getNome());
-                    } else {
-                        titulo = "Fatura Fecha em " + diasParaFechamento + " Dias";
-                        mensagem = String.format(
-                                "A fatura do %s fecha em %d dias (%s). Planeje seus gastos.",
-                                cartao.getNome(), diasParaFechamento,
-                                dataFechamentoAlerta.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM")));
-                    }
-
-                    IaInsight insight = new IaInsight(
-                            usuario,
-                            TipoInsight.AVISO_FECHAMENTO,
-                            titulo,
-                            mensagem,
-                            "{\"cartaoId\":\"" + cartao.getId()
-                                    + "\",\"diasParaFechamento\":" + diasParaFechamento
-                                    + ",\"dataFechamento\":\"" + dataFechamentoAlerta + "\"}"
-                    );
-                    iaInsightRepository.save(insight);
-                }
+            try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
             }
         }
     }
@@ -1225,7 +918,11 @@ public class IaService {
                                     motivo, nomeCategoria, formatarValor(totalMensalGrupo) + "/mês", nomesDasAssinaturas),
                             "{\"categoria\":\"" + chaveCategoria + "\",\"totalMensal\":" + totalMensalGrupo + ",\"quantidade\":" + grupo.size() + "}"
                     );
-                    iaInsightRepository.save(insight);
+                    try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
                 }
             }
         }
@@ -1278,7 +975,11 @@ public class IaService {
                                             valorMaisRecente),
                                     "{\"assinaturaId\":\"" + assinatura.getId() + "\",\"nome\":\"" + assinatura.getNome() + "\",\"valorAnterior\":" + valorAnterior + ",\"valorAtual\":" + valorMaisRecente + "}"
                             );
-                            iaInsightRepository.save(insight);
+                            try {
+                iaInsightRepository.save(insight);
+            } catch (Exception e) {
+                // Race condition: constraint unique impede duplicatas
+            }
                         }
                     }
                 }
@@ -1326,457 +1027,15 @@ public class IaService {
                                         cobrada.getValor().doubleValue(), cobrada.getDescricao()),
                                 "{\"estabelecimento\":\"" + cobrada.getDescricao() + "\",\"valor\":" + cobrada.getValor() + "}"
                         );
-                        iaInsightRepository.save(insight);
-                    }
-                }
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // RN-03 — SIMULAÇÃO DE COMPRA PARCELADA
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * RN-03: Simula o impacto futuro de uma compra parcelada nas faturas futuras do cartão.
-     * Retorna projeção mensal e alerta se comprometer mais de 30% do limite.
-     */
-    public Map<String, Object> simularCompraParcela(UUID cartaoId, BigDecimal valorTotal, int numeroParcelas, UUID usuarioId) {
-        Cartao cartao = cartaoRepository.findByIdAndUsuarioIdAndAtivoTrue(cartaoId, usuarioId)
-                .orElseThrow(() -> new RuntimeException("Cartão não encontrado."));
-
-        BigDecimal valorParcela = valorTotal.divide(BigDecimal.valueOf(numeroParcelas), 2, RoundingMode.HALF_UP);
-        BigDecimal limiteDisponivel = cartao.getLimiteDisponivel();
-        BigDecimal limiteTotal = cartao.getLimite();
-
-        LocalDate hoje = LocalDate.now();
-        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM");
-
-        List<Map<String, Object>> projecoesMensais = new ArrayList<>();
-        BigDecimal totalComprometidoFuturo = BigDecimal.ZERO;
-
-        for (int i = 0; i < numeroParcelas; i++) {
-            LocalDate mesReferencia = hoje.plusMonths(i).withDayOfMonth(1);
-
-            // Buscar faturas já existentes para este mês/cartão
-            Optional<Fatura> faturaExistente = faturaRepository
-                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartaoId, usuarioId, mesReferencia);
-
-            BigDecimal valorJaNaFatura = faturaExistente
-                    .map(Fatura::getValorTotal)
-                    .orElse(BigDecimal.ZERO);
-
-            BigDecimal valorComParcela = valorJaNaFatura.add(valorParcela);
-            totalComprometidoFuturo = totalComprometidoFuturo.add(valorParcela);
-
-            Map<String, Object> projecao = new HashMap<>();
-            projecao.put("mes", mesReferencia.format(fmt));
-            projecao.put("valorJaNaFatura", valorJaNaFatura);
-            projecao.put("valorParcela", valorParcela);
-            projecao.put("valorComParcela", valorComParcela);
-            projecoesMensais.add(projecao);
-        }
-
-        // Verificar se compromete mais de 30% do limite total (RN-03)
-        double percentualDoLimite = limiteTotal.compareTo(BigDecimal.ZERO) > 0
-                ? valorTotal.divide(limiteTotal, 4, RoundingMode.HALF_UP)
-                        .multiply(BigDecimal.valueOf(100)).doubleValue()
-                : 0.0;
-
-        boolean impactoNegativo = percentualDoLimite >= 30.0 || valorTotal.compareTo(limiteDisponivel) > 0;
-
-        String mensagem;
-        if (valorTotal.compareTo(limiteDisponivel) > 0) {
-            mensagem = String.format("Atenção! O valor total de R$ %.2f supera seu limite disponível atual de R$ %.2f.",
-                    valorTotal, limiteDisponivel);
-        } else if (impactoNegativo) {
-            mensagem = String.format("Essa compra comprometerá %.0f%% do seu limite total. As parcelas de R$ %.2f/mês impactarão suas próximas %d faturas.",
-                    percentualDoLimite, valorParcela, numeroParcelas);
-        } else {
-            mensagem = String.format("Compra dentro da capacidade. Parcelas de R$ %.2f/mês por %d meses, comprometendo %.0f%% do limite.",
-                    valorParcela, numeroParcelas, percentualDoLimite);
-        }
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("impactoNegativo", impactoNegativo);
-        result.put("mensagem", mensagem);
-        result.put("valorParcela", valorParcela);
-        result.put("percentualDoLimite", Math.round(percentualDoLimite * 10.0) / 10.0);
-        result.put("limiteDisponivel", limiteDisponivel);
-        result.put("projecoesMensais", projecoesMensais);
-        return result;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // PROJEÇÃO DE FATURAS (endpoint dedicado /api/ia/projecao-cartoes)
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Endpoint dedicado: retorna projeção/comparação para TODOS os cartões ativos do usuário.
-     * - Fatura ABERTA: projeção de fechamento (via IA ou extrapolation linear)
-     * - Fatura FECHADA: valor real vs média histórica
-     * Chamado: page load /cartoes, nova transação, botão "Analisar com IA"
-     */
-    @SuppressWarnings("unchecked")
-    public ProjecaoCartoesResponse projetarFaturasParaUsuario(Usuario usuario) {
-        UUID usuarioId = usuario.getId();
-        LocalDate hoje = LocalDate.now();
-        LocalDate inicioMes = hoje.withDayOfMonth(1);
-        List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
-
-        List<ProjecaoCartaoDTO> projecoes = new ArrayList<>();
-        // Dados coletados para enviar à IA em batch (apenas cartões ABERTOS com >= 3 dias)
-        List<Map<String, Object>> dadosParaIa = new ArrayList<>();
-
-        for (Cartao cartao : cartoes) {
-            // 1. Buscar faturas históricas (últimos 6 meses, fechadas/pagas/atrasadas)
-            LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
-            List<Fatura> faturasHistoricas = faturaRepository
-                    .findByCartaoIdAndUsuarioIdOrderByMesReferenciaDesc(cartao.getId(), usuarioId)
-                    .stream()
-                    .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
-                    .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
-                    .filter(f -> f.getMesReferencia().isBefore(inicioMes))
-                    .collect(Collectors.toList());
-
-            // 2. Calcular média histórica
-            BigDecimal mediaHistorica = null;
-            int mesesHistorico = faturasHistoricas.size();
-            if (mesesHistorico >= 2) {
-                BigDecimal totalHistorico = faturasHistoricas.stream()
-                        .map(Fatura::getValorTotal)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add);
-                mediaHistorica = totalHistorico
-                        .divide(BigDecimal.valueOf(mesesHistorico), 2, RoundingMode.HALF_UP);
-            }
-
-            // 3. Buscar gasto acumulado no mês atual (apenas COMPRA_CREDITO primárias)
-            List<Transacao> transacoesMes = transacaoRepository
-                    .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
-                    .stream()
-                    .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                    .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
-                    .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
-                    .collect(Collectors.toList());
-
-            BigDecimal valorAtualMes = transacoesMes.stream()
-                    .map(Transacao::getValor)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-            // 4. Verificar se fatura atual está ABERTA ou FECHADA
-            Optional<Fatura> faturaAtualOpt = faturaRepository
-                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, inicioMes);
-
-            boolean faturaFechada = faturaAtualOpt
-                    .map(f -> STATUS_FECHADOS.contains(f.getStatus()))
-                    .orElse(false);
-
-            long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
-
-            // 5. Montar DTO conforme o status
-            if (faturaFechada && faturaAtualOpt.isPresent()) {
-                // ── FATURA FECHADA: usar valor real ──────────────────────
-                BigDecimal valorReal = faturaAtualOpt.get().getValorTotal();
-                BigDecimal desvioPercentual = null;
-                String classificacao;
-                String mensagem;
-
-                if (mediaHistorica != null && mediaHistorica.compareTo(BigDecimal.ZERO) > 0) {
-                    desvioPercentual = valorReal.subtract(mediaHistorica)
-                            .divide(mediaHistorica, 4, RoundingMode.HALF_UP)
-                            .multiply(BigDecimal.valueOf(100))
-                            .setScale(1, RoundingMode.HALF_UP);
-
-                    double desvio = desvioPercentual.doubleValue();
-                    if (desvio > 10.0) {
-                        classificacao = "ACIMA";
-                        mensagem = String.format(
-                                "A fatura do %s fechou em %s — %d%% acima da sua média dos últimos %d meses (%s).",
-                                cartao.getNome(), formatarValor(valorReal),
-                                Math.round(desvio), mesesHistorico, formatarValor(mediaHistorica));
-                    } else if (desvio < -10.0) {
-                        classificacao = "ABAIXO";
-                        mensagem = String.format(
-                                "A fatura do %s fechou em %s — %d%% abaixo da sua média dos últimos %d meses (%s). Excelente!",
-                                cartao.getNome(), formatarValor(valorReal),
-                                Math.abs(Math.round(desvio)), mesesHistorico, formatarValor(mediaHistorica));
-                    } else {
-                        classificacao = "DENTRO";
-                        mensagem = String.format(
-                                "A fatura do %s fechou em %s, dentro da faixa esperada (média: %s).",
-                                cartao.getNome(), formatarValor(valorReal), formatarValor(mediaHistorica));
-                    }
-                } else {
-                    classificacao = "SEM_DADOS";
-                    mensagem = String.format(
-                            "A fatura do %s fechou em %s. Histórico insuficiente para comparação.",
-                            cartao.getNome(), formatarValor(valorReal));
-                }
-
-                projecoes.add(new ProjecaoCartaoDTO(
-                        cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
-                        "FECHADA", valorAtualMes, valorReal, false,
-                        valorReal, mediaHistorica, mesesHistorico,
-                        desvioPercentual, classificacao, mensagem,
-                        (int) hoje.lengthOfMonth(), (int) diasPassados
-                ));
-
-            } else {
-                // ── FATURA ABERTA ou SEM FATURA ──────────────────────────
-                String statusFatura = faturaAtualOpt.isPresent() ? "ABERTA" : "SEM_FATURA";
-
-                if (diasPassados >= 3 && valorAtualMes.compareTo(BigDecimal.ZERO) > 0) {
-                    // Coletar dados para chamada em batch à IA
-                    BigDecimal mediaDiaria = valorAtualMes
-                            .divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP);
-                    BigDecimal projecaoExtrapolada = mediaDiaria
-                            .multiply(BigDecimal.valueOf(hoje.lengthOfMonth()))
-                            .setScale(2, RoundingMode.HALF_UP);
-
-                    // Top categorias do mês
-                    Map<String, BigDecimal> topCategorias = transacoesMes.stream()
-                            .filter(t -> t.getCategoria() != null)
-                            .collect(Collectors.groupingBy(
-                                    t -> t.getCategoria().getNome(),
-                                    Collectors.reducing(BigDecimal.ZERO, Transacao::getValor, BigDecimal::add)
-                            ));
-
-                    // Ordenar por valor desc e pegar top 5
-                    String topCategoriasStr = topCategorias.entrySet().stream()
-                            .sorted(Map.Entry.<String, BigDecimal>comparingByValue().reversed())
-                            .limit(5)
-                            .map(e -> e.getKey() + " " + formatarValor(e.getValue()))
-                            .collect(Collectors.joining(", "));
-
-                    Map<String, Object> dadoCartao = new HashMap<>();
-                    dadoCartao.put("cartaoId", cartao.getId());
-                    dadoCartao.put("cartaoNome", cartao.getNome());
-                    dadoCartao.put("corHexadecimal", cartao.getCorHexadecimal() != null ? cartao.getCorHexadecimal() : "");
-                    dadoCartao.put("mediaHistorica", mediaHistorica != null ? mediaHistorica : BigDecimal.ZERO);
-                    dadoCartao.put("gastoMes", valorAtualMes);
-                    dadoCartao.put("diasPassados", diasPassados);
-                    dadoCartao.put("diasNoMes", (long) hoje.lengthOfMonth());
-                    dadoCartao.put("projecaoExtrapolada", projecaoExtrapolada);
-                    dadoCartao.put("topCategoriasStr", topCategoriasStr);
-                    dadoCartao.put("statusFatura", statusFatura);
-                    dadoCartao.put("mesesHistorico", (long) mesesHistorico);
-                    dadosParaIa.add(dadoCartao);
-
-                } else if (faturaAtualOpt.isPresent() && diasPassados < 3) {
-                    // ── < 3 dias no mês: extrapolation simples sem IA ──
-                    BigDecimal projecao = valorAtualMes.compareTo(BigDecimal.ZERO) > 0 && diasPassados > 0
-                            ? valorAtualMes.divide(BigDecimal.valueOf(diasPassados), 4, RoundingMode.HALF_UP)
-                                    .multiply(BigDecimal.valueOf(hoje.lengthOfMonth()))
-                                    .setScale(2, RoundingMode.HALF_UP)
-                            : BigDecimal.ZERO;
-
-                    BigDecimal desvioPercentual = null;
-                    String classificacao = "PRIMEIRO_MES";
-                    String mensagem = String.format(
-                            "Projection initial for %s: %s (only %d days of data).",
-                            cartao.getNome(), formatarValor(projecao), diasPassados);
-
-                    if (mediaHistorica != null && mediaHistorica.compareTo(BigDecimal.ZERO) > 0
-                            && projecao.compareTo(BigDecimal.ZERO) > 0) {
-                        desvioPercentual = projecao.subtract(mediaHistorica)
-                                .divide(mediaHistorica, 4, RoundingMode.HALF_UP)
-                                .multiply(BigDecimal.valueOf(100))
-                                .setScale(1, RoundingMode.HALF_UP);
-                        double desvio = desvioPercentual.doubleValue();
-                        if (desvio > 10.0) {
-                            classificacao = "ACIMA";
-                        } else if (desvio < -10.0) {
-                            classificacao = "ABAIXO";
-                        } else {
-                            classificacao = "DENTRO";
-                        }
-                        mensagem = String.format(
-                                "In this pace, the %s invoice will close at %s (%d%% vs average of %s).",
-                                cartao.getNome(), formatarValor(projecao),
-                                Math.abs(Math.round(desvio)), formatarValor(mediaHistorica));
-                    }
-
-                    projecoes.add(new ProjecaoCartaoDTO(
-                            cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
-                            statusFatura, valorAtualMes, projecao, false,
-                            null, mediaHistorica, mesesHistorico,
-                            desvioPercentual, classificacao, mensagem,
-                            (int) hoje.lengthOfMonth(), (int) diasPassados
-                    ));
-
-                } else {
-                    // ── Cartão sem gastos ou novo ──
-                    String classificacao = mesesHistorico == 0 ? "NOVO" : "SEM_DADOS";
-                    String mensagem = mesesHistorico == 0
-                            ? String.format("Cartão %s sem histórico de faturas fechadas.", cartao.getNome())
-                            : String.format("No spending recorded this month for %s.", cartao.getNome());
-
-                    projecoes.add(new ProjecaoCartaoDTO(
-                            cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
-                            statusFatura, valorAtualMes, BigDecimal.ZERO, false,
-                            null, mediaHistorica, mesesHistorico,
-                            null, classificacao, mensagem,
-                            (int) hoje.lengthOfMonth(), (int) diasPassados
-                    ));
-                }
-            }
-        }
-
-        // 6. Chamar IA uma única vez para todos os cartões ABERTOS com dados suficientes
-        boolean dadosInsuficientes = false;
-        if (!dadosParaIa.isEmpty()) {
-            try {
-                Map<UUID, BigDecimal> projecoesIa = chamarIaParaProjecao(dadosParaIa);
-
-                // Atualizar as projeções com os valores da IA
-                for (int i = 0; i < projecoes.size(); i++) {
-                    ProjecaoCartaoDTO p = projecoes.get(i);
-                    if (projecoesIa.containsKey(p.cartaoId())) {
-                        BigDecimal valorIa = projecoesIa.get(p.cartaoId());
-                        BigDecimal desvio = null;
-                        String classificacao = p.classificacao();
-                        String mensagem = p.mensagemResumo();
-
-                        if (p.mediaHistorica() != null && p.mediaHistorica().compareTo(BigDecimal.ZERO) > 0) {
-                            desvio = valorIa.subtract(p.mediaHistorica())
-                                    .divide(p.mediaHistorica(), 4, RoundingMode.HALF_UP)
-                                    .multiply(BigDecimal.valueOf(100))
-                                    .setScale(1, RoundingMode.HALF_UP);
-                            double desvioDbl = desvio.doubleValue();
-                            if (desvioDbl > 10.0) {
-                                classificacao = "ACIMA";
-                                mensagem = String.format(
-                                        "Neste ritmo, a fatura do %s fechará em %s — %d%% acima da sua média dos últimos %d meses (%s).",
-                                        p.cartaoNome(), formatarValor(valorIa),
-                                        Math.abs(Math.round(desvioDbl)), p.mesesHistorico(), formatarValor(p.mediaHistorica()));
-                            } else if (desvioDbl < -10.0) {
-                                classificacao = "ABAIXO";
-                                mensagem = String.format(
-                                        "Neste ritmo, a fatura do %s fechará em %s — %d%% abaixo da sua média dos últimos %d meses (%s).",
-                                        p.cartaoNome(), formatarValor(valorIa),
-                                        Math.abs(Math.round(desvioDbl)), p.mesesHistorico(), formatarValor(p.mediaHistorica()));
-                            } else {
-                                classificacao = "DENTRO";
-                                mensagem = String.format(
-                                        "Neste ritmo, a fatura do %s fechará em %s, dentro da faixa esperada (média: %s).",
-                                        p.cartaoNome(), formatarValor(valorIa), formatarValor(p.mediaHistorica()));
-                            }
-                        }
-
-                        projecoes.set(i, new ProjecaoCartaoDTO(
-                                p.cartaoId(), p.cartaoNome(), p.corHexadecimal(),
-                                p.statusFatura(), p.valorAtualNoMes(), valorIa, true,
-                                p.valorRealFechado(), p.mediaHistorica(), p.mesesHistorico(),
-                                desvio, classificacao, mensagem,
-                                p.diasNoMes(), p.diasPassados()
-                        ));
-                    }
-                }
+                        try {
+                iaInsightRepository.save(insight);
             } catch (Exception e) {
-                // Fallback: usar extrapolation linear (já calculada)
-                dadosInsuficientes = true;
+                // Race condition: constraint unique impede duplicatas
             }
-        }
-
-        return new ProjecaoCartoesResponse(projecoes, cartoes.size(), dadosInsuficientes);
-    }
-
-    /**
-     * Envia os dados agregados de TODOS os cartões abertos para a IA em uma única chamada.
-     * Retorna Map<cartaoId, valorProjetado>.
-     */
-    @SuppressWarnings("unchecked")
-    private Map<UUID, BigDecimal> chamarIaParaProjecao(List<Map<String, Object>> dadosParaIa) throws Exception {
-        if (openAiApiKey == null || openAiApiKey.trim().isEmpty()) {
-            throw new IllegalStateException("OpenAI API Key não configurada.");
-        }
-
-        StringBuilder userContent = new StringBuilder();
-        userContent.append("Dados para projeção de faturas:\n\n");
-
-        for (Map<String, Object> dado : dadosParaIa) {
-            UUID cartaoId = (UUID) dado.get("cartaoId");
-            String cartaoNome = (String) dado.get("cartaoNome");
-            BigDecimal mediaHist = (BigDecimal) dado.get("mediaHistorica");
-            BigDecimal gastoMes = (BigDecimal) dado.get("gastoMes");
-            long diasPassados = (long) dado.get("diasPassados");
-            long diasNoMes = (long) dado.get("diasNoMes");
-            BigDecimal projExtrapolada = (BigDecimal) dado.get("projecaoExtrapolada");
-            String topCategorias = (String) dado.get("topCategoriasStr");
-
-            userContent.append(String.format(
-                    "Cartão '%s' (ID: %s):\n" +
-                    "- Média histórica 6 meses: %s\n" +
-                    "- Gasto acumulado no mês: %s\n" +
-                    "- Dias passados: %d de %d\n" +
-                    "- Projeção por extrapolation linear: %s\n" +
-                    "- Top categorias: %s\n\n",
-                    cartaoNome, cartaoId,
-                    formatarValor(mediaHist), formatarValor(gastoMes),
-                    diasPassados, diasNoMes,
-                    formatarValor(projExtrapolada), topCategorias
-            ));
-        }
-
-        userContent.append("Retorne APENAS um JSON no formato: " +
-                "{\"projecoes\":[{\"cartaoId\":\"<uuid>\",\"valor\":<numero>}]}\n" +
-                "Use o valor projetado de fechamento realista, considerando padrões de gastos " +
-                "e a média histórica. Não apenas extrapolação linear — ajuste se os gastos " +
-                "estiverem concentrados em categorias variáveis vs fixas.");
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Authorization", "Bearer " + openAiApiKey);
-
-        Map<String, Object> messageSystem = new HashMap<>();
-        messageSystem.put("role", "system");
-        messageSystem.put("content",
-                "Você é um assistente financeiro previsor de gastos com cartão de crédito. " +
-                "Analise os dados de cada cartão fornecidos e retorne APENAS um JSON válido com " +
-                "os valores projetados de fechamento de fatura. Considere a média histórica, " +
-                "o ritmo atual de gastos, e a natureza das categorias (gastos fixos vs variáveis). " +
-                "IMPORTANTE: Retorne APENAS o JSON, sem texto adicional, sem markdown.");
-
-        Map<String, Object> messageUser = new HashMap<>();
-        messageUser.put("role", "user");
-        messageUser.put("content", userContent.toString());
-
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", openAiModel);
-        requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
-        requestBody.put("temperature", 0.1);
-        requestBody.put("max_tokens", 300);
-
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
-        ResponseEntity<String> response = restTemplate.postForEntity(
-                openAiBaseUrl + "/chat/completions", entity, String.class);
-
-        Map<UUID, BigDecimal> resultado = new HashMap<>();
-
-        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
-            Map<?, ?> responseMap = objectMapper.readValue(response.getBody(), Map.class);
-            List<?> choices = (List<?>) responseMap.get("choices");
-            if (choices != null && !choices.isEmpty()) {
-                Map<?, ?> choice = (Map<?, ?>) choices.get(0);
-                Map<?, ?> message = (Map<?, ?>) choice.get("message");
-                String content = ((String) message.get("content")).trim();
-                // Limpar possíveis wrapping de markdown
-                content = content.replaceAll("```json", "").replaceAll("```", "").trim();
-
-                Map<?, ?> parsed = objectMapper.readValue(content, Map.class);
-                List<?> projecoesLista = (List<?>) parsed.get("projecoes");
-                if (projecoesLista != null) {
-                    for (Object item : projecoesLista) {
-                        Map<?, ?> proj = (Map<?, ?>) item;
-                        UUID id = UUID.fromString((String) proj.get("cartaoId"));
-                        BigDecimal valor = new BigDecimal(proj.get("valor").toString());
-                        resultado.put(id, valor);
                     }
                 }
             }
         }
-
-        return resultado;
     }
 
     // ═══════════════════════════════════════════════════════════════════

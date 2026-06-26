@@ -96,4 +96,35 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
     BigDecimal sumValorTotalByPeriodo(@Param("usuarioId") UUID usuarioId,
                                        @Param("inicio") LocalDate inicio,
                                        @Param("fim") LocalDate fim);
+
+    // ── Queries para projeção híbrida de fatura ───────────────────────────
+
+    /** Soma gastos variáveis por cartão (exclui parcelas 2/3+ e assinaturas). */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t " +
+           "WHERE t.usuario.id = :usuarioId " +
+           "AND t.cartao.id = :cartaoId " +
+           "AND t.ativo = true " +
+           "AND t.tipo = 'COMPRA_CREDITO' " +
+           "AND (t.numeroParcela IS NULL OR t.numeroParcela = 1) " +
+           "AND (LOWER(t.descricao) NOT LIKE 'assinatura:%') " +
+           "AND t.data BETWEEN :inicio AND :fim")
+    BigDecimal sumGastosVariaveisPorCartao(
+        @Param("usuarioId") UUID usuarioId,
+        @Param("cartaoId") UUID cartaoId,
+        @Param("inicio") LocalDate inicio,
+        @Param("fim") LocalDate fim);
+
+    /** Soma assinaturas já cobradas no mês (transações "Assinatura: %"). */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t " +
+           "WHERE t.usuario.id = :usuarioId " +
+           "AND t.cartao.id = :cartaoId " +
+           "AND t.ativo = true " +
+           "AND t.tipo = 'COMPRA_CREDITO' " +
+           "AND (LOWER(t.descricao) LIKE 'assinatura:%') " +
+           "AND t.data BETWEEN :inicio AND :fim")
+    BigDecimal sumAssinaturasCobradasNoMes(
+        @Param("usuarioId") UUID usuarioId,
+        @Param("cartaoId") UUID cartaoId,
+        @Param("inicio") LocalDate inicio,
+        @Param("fim") LocalDate fim);
 }

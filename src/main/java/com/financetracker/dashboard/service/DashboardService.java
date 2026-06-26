@@ -333,10 +333,21 @@ public class DashboardService {
 
 
     private List<DashboardResumoResponse.InsightDashboard> buscarInsightsAtivos(UUID usuarioId) {
+        // Tipos que NUNCA aparecem no Dashboard (exclusivos de /cartoes)
+        Set<String> tiposExclusivosCartoes = Set.of(
+                "CARTAO_PREVISAO",
+                "MELHOR_CARTAO",
+                "AVISO_FECHAMENTO",
+                "ESTOURO_FATURA",
+                "CONCENTRACAO_GASTOS_FATURA",
+                "OTIMIZACAO_PARCELAMENTO"
+        );
+
         List<IaInsight> insights = iaInsightRepository
                 .findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
 
         return insights.stream()
+                .filter(i -> !tiposExclusivosCartoes.contains(i.getTipo().name()))
                 .map(i -> new DashboardResumoResponse.InsightDashboard(
                         i.getId(),
                         i.getTipo().name(),

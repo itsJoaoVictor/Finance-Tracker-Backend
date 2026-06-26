@@ -20,5 +20,9 @@ public enum TipoInsight {
     QUEDA_RECEITA,
     REFORCO_POSITIVO,
     ACELERADOR_METAS,
-    INFLACAO_PESSOAL
+    INFLACAO_PESSOAL,
+
+    // ── Insights de Cartão (IaServiceCartao) ──────────────────────────
+    CONCENTRACAO_GASTOS_FATURA,
+    OTIMIZACAO_PARCELAMENTO
 }

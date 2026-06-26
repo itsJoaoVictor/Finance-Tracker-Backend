@@ -20,4 +20,8 @@ public interface AssinaturaRepository extends JpaRepository<Assinatura, UUID> {
         LocalDate inicio, LocalDate fim);
 
     List<Assinatura> findByAtivoTrueAndDataProximaCobrancaLessThanEqual(LocalDate data);
+
+    /** Busca assinaturas ativas de um cartão cuja próxima cobrança esteja no período. */
+    List<Assinatura> findByCartaoIdAndAtivoTrueAndDataProximaCobrancaBetween(
+        UUID cartaoId, LocalDate inicio, LocalDate fim);
 }

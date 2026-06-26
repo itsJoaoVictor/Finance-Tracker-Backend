@@ -4,6 +4,7 @@ import com.financetracker.ia.domain.IaInsight;
 import com.financetracker.ia.dto.ProjecaoCartoesResponse;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.ia.service.IaService;
+import com.financetracker.ia.service.IaServiceCartao;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import org.springframework.http.ResponseEntity;
@@ -11,8 +12,6 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,13 +22,16 @@ import java.util.UUID;
 public class IaController {
 
     private final IaService iaService;
+    private final IaServiceCartao iaServiceCartao;
     private final IaInsightRepository iaInsightRepository;
     private final UsuarioRepository usuarioRepository;
 
     public IaController(IaService iaService,
+                        IaServiceCartao iaServiceCartao,
                         IaInsightRepository iaInsightRepository,
                         UsuarioRepository usuarioRepository) {
         this.iaService = iaService;
+        this.iaServiceCartao = iaServiceCartao;
         this.iaInsightRepository = iaInsightRepository;
         this.usuarioRepository = usuarioRepository;
     }
@@ -169,18 +171,6 @@ public class IaController {
         return ResponseEntity.ok(Map.of("message", "Insights de IA reprocessados com sucesso!"));
     }
 
-    @PostMapping("/insights/processar/cartao")
-    public ResponseEntity<?> processarInsightsCartao(@AuthenticationPrincipal UserDetails userDetails) {
-        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
-        if (usuarioOpt.isEmpty()) {
-            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
-        }
-
-        // Processa RN-01, RN-04, RN-11
-        iaService.processarInsightsCartaoParaUsuario(usuarioOpt.get());
-        return ResponseEntity.ok(Map.of("message", "Insights de Cartões reprocessados com sucesso!"));
-    }
-
     @PostMapping("/insights/processar/assinatura")
     public ResponseEntity<?> processarInsightsAssinatura(@AuthenticationPrincipal UserDetails userDetails) {
         Optional<Usuario> usuarioOpt = getUsuario(userDetails);
@@ -188,9 +178,28 @@ public class IaController {
             return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
         }
 
-        // Processa RN-05, RN-06
         iaService.processarInsightsAssinaturaParaUsuario(usuarioOpt.get());
         return ResponseEntity.ok(Map.of("message", "Insights de Assinaturas reprocessados com sucesso!"));
+    }
+
+    // ─── Todos os Insights de Cartão (chamada atômica única) ─────────────
+
+    /**
+     * Endpoint dedicado: processa TODOS os insights de cartão em uma única chamada.
+     * Substitui as 4 chamadas sequenciais (aviso-fechamento, melhor-cartao, etc.)
+     * Eliminando o problema de React StrictMode executar múltiplas vezes.
+     * Chamado ao entrar na tela /cartoes.
+     */
+    @PostMapping("/insights/cartao")
+    public ResponseEntity<?> processarTodosInsightsCartao(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        // Processa insights dedicados de cartão (AVISO_FECHAMENTO, MELHOR_CARTAO, etc.)
+        iaServiceCartao.processarTodosInsightsCartao(usuarioOpt.get());
+        return ResponseEntity.ok(Map.of("message", "Insights de Cartões processados com sucesso!"));
     }
 
     // ─── Projeção de Faturas (dedicada) ────────────────────────────────
@@ -206,7 +215,7 @@ public class IaController {
             return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
         }
 
-        ProjecaoCartoesResponse response = iaService.projetarFaturasParaUsuario(usuarioOpt.get());
+        ProjecaoCartoesResponse response = iaServiceCartao.projetarFaturasParaUsuario(usuarioOpt.get());
         return ResponseEntity.ok(response);
     }
 
@@ -223,42 +232,63 @@ public class IaController {
             return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
         }
 
-        iaService.processarAvisoFechamentoParaUsuario(usuarioOpt.get());
+        iaServiceCartao.processarAvisoFechamentoParaUsuario(usuarioOpt.get());
         return ResponseEntity.ok(Map.of("message", "Avisos de fechamento processados com sucesso!"));
     }
 
-    // ─── RN-03: Simulação de Compra Parcelada ─────────────────────────
+    // ─── Melhor Cartão para o Momento (dedicado) ────────────────────
 
     /**
-     * Simula o impacto de uma compra parcelada nas próximas faturas.
-     * Body: { "valorTotal": 1200.00, "parcelas": 10, "cartaoId": "uuid" }
+     * Endpoint dedicado para identificar o melhor cartão para usar agora
+     * com base no fluxo de caixa (dias até o próximo fechamento).
+     * Chamado ao entrar na tela /cartoes.
      */
-    @PostMapping("/simular-parcela")
-    public ResponseEntity<?> simularParcela(@RequestBody Map<String, Object> request,
-                                            @AuthenticationPrincipal UserDetails userDetails) {
+    @PostMapping("/melhor-cartao")
+    public ResponseEntity<?> verificarMelhorCartao(@AuthenticationPrincipal UserDetails userDetails) {
         Optional<Usuario> usuarioOpt = getUsuario(userDetails);
         if (usuarioOpt.isEmpty()) {
             return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
         }
 
-        try {
-            BigDecimal valorTotal = new BigDecimal(request.get("valorTotal").toString());
-            int parcelas = Integer.parseInt(request.get("parcelas").toString());
-            UUID cartaoId = UUID.fromString(request.get("cartaoId").toString());
-
-            if (parcelas < 1 || parcelas > 48) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Número de parcelas deve ser entre 1 e 48."));
-            }
-            if (valorTotal.compareTo(BigDecimal.ZERO) <= 0) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Valor total deve ser positivo."));
-            }
-
-            Map<String, Object> resultado = iaService.simularCompraParcela(
-                    cartaoId, valorTotal, parcelas, usuarioOpt.get().getId());
-            return ResponseEntity.ok(resultado);
-
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Parâmetros inválidos: " + e.getMessage()));
-        }
+        iaServiceCartao.processarMelhorCartaoParaUsuario(usuarioOpt.get());
+        return ResponseEntity.ok(Map.of("message", "Melhor cartão analisado com sucesso!"));
     }
+
+    // ─── Concentração de Gastos na Fatura (Category Spike) ────────────
+
+    /**
+     * Endpoint dedicado: analisa a composição da fatura ABERTA por categoria.
+     * Se uma categoria representar mais de 50% do total da fatura e não for
+     * essencial, gera um insight de alerta.
+     * Chamado ao entrar na tela /cartoes.
+     */
+    @PostMapping("/concentracao-gastos-fatura")
+    public ResponseEntity<?> verificarConcentracaoGastos(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        iaServiceCartao.processarConcentracaoGastosFaturaParaUsuario(usuarioOpt.get());
+        return ResponseEntity.ok(Map.of("message", "Análise de concentração de gastos processada com sucesso!"));
+    }
+
+    // ─── Otimização de Parcelamentos Futuros (Folga de Limite) ────────
+
+    /**
+     * Endpoint dedicado: identifica parcelamentos que terminam no mês atual
+     * e informa o usuário que aquele valor ficará "livre" no orçamento.
+     * Chamado ao entrar na tela /cartoes.
+     */
+    @PostMapping("/otimizacao-parcelamento")
+    public ResponseEntity<?> verificarOtimizacaoParcelamento(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        iaServiceCartao.processarOtimizacaoParcelamentoParaUsuario(usuarioOpt.get());
+        return ResponseEntity.ok(Map.of("message", "Análise de otimização de parcelamentos processada com sucesso!"));
+    }
+
 }

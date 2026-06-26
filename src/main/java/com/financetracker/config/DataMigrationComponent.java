@@ -55,7 +55,7 @@ public class DataMigrationComponent {
                 """;
             String constraintDef = jdbcTemplate.queryForObject(checkSql, String.class);
 
-            if (constraintDef != null && !constraintDef.contains("DINHEIRO_DORMINDO")) {
+            if (constraintDef != null && !constraintDef.contains("CONCENTRACAO_GASTOS_FATURA")) {
                 System.out.println("[DataMigration] Constraint antigo detectado. Atualizando...");
 
                 jdbcTemplate.execute("ALTER TABLE ia_insights DROP CONSTRAINT IF EXISTS ia_insights_tipo_check");
@@ -67,7 +67,8 @@ public class DataMigrationComponent {
                         'ASSINATURA_ESQUECIDA', 'SUGESTAO_VENCIMENTO', 'ESTOURO_FATURA',
                         'AVISO_FECHAMENTO', 'MICRO_TRANSACOES', 'ORCAMENTO_SOBRA_META',
                         'DINHEIRO_DORMINDO', 'RADAR_FIM_SEMANA', 'QUEDA_RECEITA',
-                        'REFORCO_POSITIVO', 'ACELERADOR_METAS', 'INFLACAO_PESSOAL'
+                        'REFORCO_POSITIVO', 'ACELERADOR_METAS', 'INFLACAO_PESSOAL',
+                        'CONCENTRACAO_GASTOS_FATURA', 'OTIMIZACAO_PARCELAMENTO'
                     ))
                     """);
 
@@ -133,5 +134,80 @@ public class DataMigrationComponent {
         }
 
         System.out.println("[DataMigration] Migração concluída. Faturas corrigidas: " + migradas);
+    }
+
+    /**
+     * Migração: remove insights duplicados criados por race condition
+     * e cria índices únicos parciais para prevenir futuras duplicatas.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void limparInsightsDuplicadosECriarIndices() {
+        System.out.println("[DataMigration] Verificando insights duplicados e criando índices...");
+
+        try {
+            // 1. Remove TODOS os insights duplicados
+            int removidos = jdbcTemplate.update("""
+                DELETE FROM ia_insights
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM ia_insights
+                    GROUP BY usuario_id, tipo, titulo
+                )
+                """);
+            if (removidos > 0) {
+                System.out.println("[DataMigration] Removidos " + removidos + " insights duplicados.");
+            }
+
+            // 2. Criar índices únicos parciais para prevenir duplicatas
+            // Tipos com card dedicado (só 1 por usuário)
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_melhor_cartao",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_melhor_cartao ON ia_insights (usuario_id, titulo) WHERE tipo = 'MELHOR_CARTAO' AND lido = false"
+            );
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_queda_receita",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_queda_receita ON ia_insights (usuario_id, titulo) WHERE tipo = 'QUEDA_RECEITA' AND lido = false"
+            );
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_reforco_positivo",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_reforco_positivo ON ia_insights (usuario_id, titulo) WHERE tipo = 'REFORCO_POSITIVO' AND lido = false"
+            );
+
+            // Tipos com card por cartão (1 por cartão por usuário)
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_estouro_fatura",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_estouro_fatura ON ia_insights (usuario_id, metadados) WHERE tipo = 'ESTOURO_FATURA' AND lido = false"
+            );
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_aviso_fechamento",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_aviso_fechamento ON ia_insights (usuario_id, metadados) WHERE tipo = 'AVISO_FECHAMENTO' AND lido = false"
+            );
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_concentracao_gastos",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_concentracao_gastos ON ia_insights (usuario_id, metadados) WHERE tipo = 'CONCENTRACAO_GASTOS_FATURA' AND lido = false"
+            );
+            criarIndiceSeNaoExistir(
+                "idx_ia_insights_uniq_otimizacao_parcelamento",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ia_insights_uniq_otimizacao_parcelamento ON ia_insights (usuario_id, metadados) WHERE tipo = 'OTIMIZACAO_PARCELAMENTO' AND lido = false"
+            );
+
+            System.out.println("[DataMigration] Índices criados/verificados com sucesso.");
+        } catch (Exception e) {
+            System.out.println("[DataMigration] Aviso: " + e.getMessage());
+        }
+    }
+
+    private void criarIndiceSeNaoExistir(String nomeIndice, String sql) {
+        try {
+            // Verificar se o índice já existe
+            String checkSql = "SELECT 1 FROM pg_indexes WHERE indexname = '" + nomeIndice + "'";
+            Boolean existe = jdbcTemplate.queryForObject(checkSql, Boolean.class);
+            if (Boolean.TRUE.equals(existe)) return;
+
+            jdbcTemplate.execute(sql);
+            System.out.println("[DataMigration] Índice criado: " + nomeIndice);
+        } catch (Exception e) {
+            System.out.println("[DataMigration] Aviso ao criar índice " + nomeIndice + ": " + e.getMessage());
+        }
     }
 }
