@@ -8,8 +8,8 @@ import com.financetracker.ia.repository.IaCorrecaoUsuarioRepository;
 import com.financetracker.ia.repository.IaDicionarioCategoriaRepository;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.ia.service.IaService;
+import com.financetracker.ia.service.IaServiceAssinatura;
 import com.financetracker.transacao.repository.TransacaoRepository;
-import com.financetracker.assinatura.repository.AssinaturaRepository;
 import com.financetracker.conta.repository.ContaRepository;
 import com.financetracker.transacao.repository.OrcamentoCategoriaRepository;
 import com.financetracker.transacao.repository.MetasEconomiaRepository;
@@ -46,10 +46,10 @@ public class IaServiceTest {
     private CategoriaRepository categoriaRepository;
 
     @Mock
-    private AssinaturaRepository assinaturaRepository;
+    private ContaRepository contaRepository;
 
     @Mock
-    private ContaRepository contaRepository;
+    private IaServiceAssinatura iaServiceAssinatura;
 
     @Mock
     private OrcamentoCategoriaRepository orcamentoRepository;

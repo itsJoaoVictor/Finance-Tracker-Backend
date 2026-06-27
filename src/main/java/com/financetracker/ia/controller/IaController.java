@@ -1,9 +1,13 @@
 package com.financetracker.ia.controller;
 
 import com.financetracker.ia.domain.IaInsight;
+import com.financetracker.ia.domain.NivelEssencialidade;
+import com.financetracker.ia.dto.FadigaAssinaturaResponse;
+import com.financetracker.ia.dto.InteligenciaAssinaturaResponse;
 import com.financetracker.ia.dto.ProjecaoCartoesResponse;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.ia.service.IaService;
+import com.financetracker.ia.service.IaServiceAssinatura;
 import com.financetracker.ia.service.IaServiceCartao;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
@@ -16,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/ia")
@@ -23,15 +28,18 @@ public class IaController {
 
     private final IaService iaService;
     private final IaServiceCartao iaServiceCartao;
+    private final IaServiceAssinatura iaServiceAssinatura;
     private final IaInsightRepository iaInsightRepository;
     private final UsuarioRepository usuarioRepository;
 
     public IaController(IaService iaService,
                         IaServiceCartao iaServiceCartao,
+                        IaServiceAssinatura iaServiceAssinatura,
                         IaInsightRepository iaInsightRepository,
                         UsuarioRepository usuarioRepository) {
         this.iaService = iaService;
         this.iaServiceCartao = iaServiceCartao;
+        this.iaServiceAssinatura = iaServiceAssinatura;
         this.iaInsightRepository = iaInsightRepository;
         this.usuarioRepository = usuarioRepository;
     }
@@ -178,8 +186,119 @@ public class IaController {
             return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
         }
 
-        iaService.processarInsightsAssinaturaParaUsuario(usuarioOpt.get());
+        iaServiceAssinatura.processarInsightsAssinaturaParaUsuario(usuarioOpt.get());
         return ResponseEntity.ok(Map.of("message", "Insights de Assinaturas reprocessados com sucesso!"));
+    }
+
+    // ─── Análise de Fadiga de Assinatura (dedicada) ───────────────────
+
+    /**
+     * Endpoint dedicado: analisa essencialidade das assinaturas ativas
+     * e retorna o panorama completo de fadiga.
+     * Chamado ao entrar na tela /assinaturas.
+     */
+    @PostMapping("/fadiga-assinatura")
+    public ResponseEntity<?> analisarFadigaAssinatura(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        FadigaAssinaturaResponse response = iaServiceAssinatura.analisarFadiga(usuarioOpt.get());
+        return ResponseEntity.ok(response);
+    }
+
+    // ─── Inteligência de Assinaturas: Reajuste + Score (dedicada) ─────
+
+    /**
+     * Endpoint dedicado: analisa reajustes e calcula score de eficiência
+     * de cada assinatura ativa do usuário.
+     * Chamado ao entrar na tela /assinaturas.
+     */
+    @PostMapping("/assinaturas/inteligencia")
+    public ResponseEntity<?> inteligenciaAssinatura(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        InteligenciaAssinaturaResponse response = iaServiceAssinatura.analisarInteligencia(usuarioOpt.get());
+        return ResponseEntity.ok(response);
+    }
+
+    // ─── Classificação de Assinaturas (IA) ─────────────────────────────
+
+    /**
+     * Retorna assinaturas que a IA não teve confiança suficiente para classificar.
+     * O frontend exibe pergunta ao usuário para confirmar.
+     */
+    @GetMapping("/assinaturas/pendentes-confirmacao")
+    public ResponseEntity<?> pendentesConfirmacao(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        List<Map<String, Object>> pendentes = iaServiceAssinatura.obterPendentesConfirmacao(usuarioOpt.get());
+        return ResponseEntity.ok(pendentes);
+    }
+
+    /**
+     * Salva a resposta do usuário para uma assinatura que a IA tinha dúvida.
+     * Body: { "assinaturaId": "uuid", "essencialidade": "ESSENCIAL|IMPORTANTE|OPCIONAL" }
+     */
+    @PostMapping("/assinaturas/confirmar-classificacao")
+    public ResponseEntity<?> confirmarClassificacao(@RequestBody Map<String, String> request,
+                                                     @AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        String assinaturaIdStr = request.get("assinaturaId");
+        String essencialidadeStr = request.get("essencialidade");
+
+        if (assinaturaIdStr == null || essencialidadeStr == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "'assinaturaId' e 'essencialidade' são obrigatórios."));
+        }
+
+        try {
+            UUID assinaturaId = UUID.fromString(assinaturaIdStr);
+            NivelEssencialidade resposta = NivelEssencialidade.valueOf(essencialidadeStr.toUpperCase());
+            iaServiceAssinatura.salvarRespostaClassificacao(assinaturaId, resposta);
+            return ResponseEntity.ok(Map.of("success", true, "message", "Classificação salva com sucesso."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Essencialidade inválida. Use: ESSENCIAL, IMPORTANTE ou OPCIONAL."));
+        }
+    }
+
+    /**
+     * Classificação comportamental: pergunta como o usuário usa a assinatura
+     * e mapeia a resposta para o nível correto.
+     * Body: { "assinaturaId": "uuid", "perfil": "uso_diario|uso_regulares|pouco_uso|esqueci" }
+     */
+    @PostMapping("/assinaturas/classificar-comportamento")
+    public ResponseEntity<?> classificarComportamento(@RequestBody Map<String, String> request,
+                                                       @AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        String assinaturaIdStr = request.get("assinaturaId");
+        String perfil = request.get("perfil");
+
+        if (assinaturaIdStr == null || perfil == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "'assinaturaId' e 'perfil' são obrigatórios."));
+        }
+
+        try {
+            UUID assinaturaId = UUID.fromString(assinaturaIdStr);
+            iaServiceAssinatura.classificarComportamento(assinaturaId, perfil);
+            return ResponseEntity.ok(Map.of("success", true, "message", "Perfil de uso registrado com sucesso."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "IDs inválidos."));
+        }
     }
 
     // ─── Todos os Insights de Cartão (chamada atômica única) ─────────────

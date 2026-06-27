@@ -1,8 +1,6 @@
 package com.financetracker.ia.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.financetracker.assinatura.entity.Assinatura;
-import com.financetracker.assinatura.repository.AssinaturaRepository;
 import com.financetracker.categoria.entity.Categoria;
 import com.financetracker.categoria.repository.CategoriaRepository;
 import com.financetracker.ia.domain.*;
@@ -42,12 +40,12 @@ public class IaService {
     private final IaCorrecaoUsuarioRepository iaCorrecaoUsuarioRepository;
     private final TransacaoRepository transacaoRepository;
     private final CategoriaRepository categoriaRepository;
-    private final AssinaturaRepository assinaturaRepository;
     private final ContaRepository contaRepository;
     private final OrcamentoCategoriaRepository orcamentoRepository;
     private final MetasEconomiaRepository metasRepository;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
+    private final IaServiceAssinatura iaServiceAssinatura;
 
     @Value("${OPENAI_BASE_URL:https://openrouter.ai/api/v1}")
     private String openAiBaseUrl;
@@ -68,22 +66,22 @@ public class IaService {
                      IaCorrecaoUsuarioRepository iaCorrecaoUsuarioRepository,
                      TransacaoRepository transacaoRepository,
                      CategoriaRepository categoriaRepository,
-                     AssinaturaRepository assinaturaRepository,
                      ContaRepository contaRepository,
                      OrcamentoCategoriaRepository orcamentoRepository,
                      MetasEconomiaRepository metasRepository,
-                     ObjectMapper objectMapper) {
+                     ObjectMapper objectMapper,
+                     IaServiceAssinatura iaServiceAssinatura) {
         this.iaInsightRepository = iaInsightRepository;
         this.iaDicionarioCategoriaRepository = iaDicionarioCategoriaRepository;
         this.iaCorrecaoUsuarioRepository = iaCorrecaoUsuarioRepository;
         this.transacaoRepository = transacaoRepository;
         this.categoriaRepository = categoriaRepository;
-        this.assinaturaRepository = assinaturaRepository;
         this.contaRepository = contaRepository;
         this.orcamentoRepository = orcamentoRepository;
         this.metasRepository = metasRepository;
         this.objectMapper = objectMapper;
         this.restTemplate = new RestTemplate();
+        this.iaServiceAssinatura = iaServiceAssinatura;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -330,7 +328,7 @@ public class IaService {
      */
     public void processarInsightsParaUsuario(Usuario usuario) {
         limparInsightsOrfaos(usuario.getId());
-        processarInsightsAssinaturaParaUsuario(usuario);
+        iaServiceAssinatura.processarInsightsAssinaturaParaUsuario(usuario);
         processarTrialHunter(usuario);
 
         // ── Novos insights comportamentais ──────────────────────────
@@ -853,141 +851,6 @@ public class IaService {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // RN-05 / RN-06 — ANÁLISE DE ASSINATURAS
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Processa RN-05 (fadiga de assinatura) e RN-06 (reajuste silencioso) para o usuário.
-     *
-     * Usa diretamente o repositório de Assinaturas (entidade própria), não transações.
-     */
-    public void processarInsightsAssinaturaParaUsuario(Usuario usuario) {
-        UUID usuarioId = usuario.getId();
-        List<IaInsight> insightsExistentes = iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId);
-
-        List<Assinatura> todasAssinaturas = assinaturaRepository.findByUsuarioId(usuarioId);
-        List<Assinatura> assinaturasAtivas = todasAssinaturas.stream()
-                .filter(a -> Boolean.TRUE.equals(a.getAtivo()))
-                .collect(Collectors.toList());
-
-        if (assinaturasAtivas.isEmpty()) return;
-
-        // ─── RN-05: FADIGA DE ASSINATURA ────────────────────────────────────────────────
-        //
-        // Agrupa assinaturas ativas pela categoria e dispara alerta se:
-        // - 3 ou mais assinaturas na mesma categoria, OU
-        // - Total mensal do grupo ultrapassa R$ 100,00
-
-        // Converter valores para mensal equivalente para comparação justa
-        Map<String, List<Assinatura>> porCategoria = assinaturasAtivas.stream()
-                .collect(Collectors.groupingBy(a -> a.getCategoria().getNome()));
-
-        for (Map.Entry<String, List<Assinatura>> entry : porCategoria.entrySet()) {
-            String nomeCategoria = entry.getKey();
-            List<Assinatura> grupo = entry.getValue();
-
-            if (grupo.size() < 2) continue; // Precisa de pelo menos 2 para ser relevante
-
-            BigDecimal totalMensalGrupo = grupo.stream()
-                    .map(a -> calcularValorMensal(a))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-            boolean fadigaPorQuantidade = grupo.size() >= 3;
-            boolean fadigaPorValor = totalMensalGrupo.compareTo(BigDecimal.valueOf(100.00)) > 0;
-
-            if (fadigaPorQuantidade || fadigaPorValor) {
-                String chaveCategoria = nomeCategoria.toLowerCase().replaceAll("\\s+", "_");
-                boolean jaExiste = insightsExistentes.stream()
-                        .anyMatch(ins -> ins.getTipo() == TipoInsight.FADIGA_ASSINATURA
-                                && ins.getMetadados() != null
-                                && ins.getMetadados().contains(chaveCategoria));
-
-                if (!jaExiste) {
-                    String nomesDasAssinaturas = grupo.stream()
-                            .map(Assinatura::getNome)
-                            .collect(Collectors.joining(", "));
-                    String motivo = fadigaPorQuantidade
-                            ? String.format("%d assinaturas na mesma categoria", grupo.size())
-                            : String.format("R$ %.2f/mês gastos em serviços similares", totalMensalGrupo);
-
-                    IaInsight insight = new IaInsight(
-                            usuario,
-                            TipoInsight.FADIGA_ASSINATURA,
-                            "Fadiga de Assinaturas: " + nomeCategoria,
-                            String.format("Você possui %s na categoria \"%s\" (%s): %s. Considere consolidar ou cancelar algum serviço redundante.",
-                                    motivo, nomeCategoria, formatarValor(totalMensalGrupo) + "/mês", nomesDasAssinaturas),
-                            "{\"categoria\":\"" + chaveCategoria + "\",\"totalMensal\":" + totalMensalGrupo + ",\"quantidade\":" + grupo.size() + "}"
-                    );
-                    try {
-                iaInsightRepository.save(insight);
-            } catch (Exception e) {
-                // Race condition: constraint unique impede duplicatas
-            }
-                }
-            }
-        }
-
-        // ─── RN-06: REAJUSTE SILENCIOSO ────────────────────────────────────────────────
-        //
-        // Para cada assinatura ativa, busca as últimas transações geradas pelo scheduler
-        // (descrição "Assinatura: NOME") e compara os valores cobrados.
-        // Se houver aumento > 5% entre a penúltima e a última cobrança → alerta.
-
-        LocalDate noventaDiasAtras = LocalDate.now().minusDays(90);
-
-        for (Assinatura assinatura : assinaturasAtivas) {
-            String descricaoEsperada = "Assinatura: " + assinatura.getNome();
-
-            // Buscar transações desta assinatura ordenadas por data
-            List<Transacao> transacoesAssinatura = transacaoRepository
-                    .findTopByDescricaoLike(usuarioId, assinatura.getNome())
-                    .stream()
-                    .filter(t -> t.getDescricao() != null && t.getDescricao().equalsIgnoreCase(descricaoEsperada))
-                    .filter(t -> !t.getData().isBefore(noventaDiasAtras))
-                    .sorted(Comparator.comparing(Transacao::getData).reversed())
-                    .collect(Collectors.toList());
-
-            if (transacoesAssinatura.size() >= 2) {
-                BigDecimal valorMaisRecente = transacoesAssinatura.get(0).getValor();
-                BigDecimal valorAnterior = transacoesAssinatura.get(1).getValor();
-
-                if (valorAnterior.compareTo(BigDecimal.ZERO) > 0 && valorMaisRecente.compareTo(valorAnterior) > 0) {
-                    BigDecimal diferenca = valorMaisRecente.subtract(valorAnterior);
-                    BigDecimal percentualAumento = diferenca
-                            .divide(valorAnterior, 4, RoundingMode.HALF_UP)
-                            .multiply(BigDecimal.valueOf(100));
-
-                    if (percentualAumento.compareTo(BigDecimal.valueOf(5.0)) > 0) {
-                        boolean jaExiste = insightsExistentes.stream()
-                                .anyMatch(ins -> ins.getTipo() == TipoInsight.REAJUSTE_SILENCIOSO
-                                        && ins.getMetadados() != null
-                                        && ins.getMetadados().contains(assinatura.getId().toString()));
-
-                        if (!jaExiste) {
-                            IaInsight insight = new IaInsight(
-                                    usuario,
-                                    TipoInsight.REAJUSTE_SILENCIOSO,
-                                    "Reajuste silencioso: " + assinatura.getNome(),
-                                    String.format("A cobrança de \"%s\" aumentou %.1f%% — de R$ %.2f para R$ %.2f. Nenhuma mudança de plano foi registrada. Vale verificar.",
-                                            assinatura.getNome(),
-                                            percentualAumento.doubleValue(),
-                                            valorAnterior,
-                                            valorMaisRecente),
-                                    "{\"assinaturaId\":\"" + assinatura.getId() + "\",\"nome\":\"" + assinatura.getNome() + "\",\"valorAnterior\":" + valorAnterior + ",\"valorAtual\":" + valorMaisRecente + "}"
-                            );
-                            try {
-                iaInsightRepository.save(insight);
-            } catch (Exception e) {
-                // Race condition: constraint unique impede duplicatas
-            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
     // RN-09 — ASSINATURAS ESQUECIDAS (TRIAL HUNTER)
     // ═══════════════════════════════════════════════════════════════════
 
@@ -1071,37 +934,4 @@ public class IaService {
         }
     }
 
-    /**
-     * Converte o valor de uma assinatura para equivalente mensal.
-     * - MENSAL: valor direto
-     * - ANUAL: valor / 12
-     * - TRIMESTRAL: valor / 3
-     * - PERSONALIZADO: estimativa baseada na unidade/frequência
-     */
-    private BigDecimal calcularValorMensal(Assinatura assinatura) {
-        BigDecimal valor = assinatura.getValor();
-        if (valor == null || valor.compareTo(BigDecimal.ZERO) == 0) return BigDecimal.ZERO;
-
-        return switch (assinatura.getTipoRecorrencia()) {
-            case ANUAL -> valor.divide(BigDecimal.valueOf(12), 2, RoundingMode.HALF_UP);
-            case TRIMESTRAL -> valor.divide(BigDecimal.valueOf(3), 2, RoundingMode.HALF_UP);
-            case PERSONALIZADO -> {
-                if (assinatura.getFrequencia() == null || assinatura.getUnidadeFrequencia() == null) {
-                    yield valor;
-                }
-                yield switch (assinatura.getUnidadeFrequencia()) {
-                    case ANOS -> valor.divide(BigDecimal.valueOf(12L * assinatura.getFrequencia()), 2, RoundingMode.HALF_UP);
-                    case MESES -> assinatura.getFrequencia() > 1
-                            ? valor.divide(BigDecimal.valueOf(assinatura.getFrequencia()), 2, RoundingMode.HALF_UP)
-                            : valor;
-                    case SEMANAS -> valor.multiply(BigDecimal.valueOf(4));
-                };
-            }
-            default -> valor; // MENSAL
-        };
-    }
-
-    private String formatarValor(BigDecimal valor) {
-        return String.format("R$ %.2f", valor);
-    }
 }
