@@ -406,8 +406,8 @@ public class IaController {
             return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
         }
 
-        iaServiceCartao.processarOtimizacaoParcelamentoParaUsuario(usuarioOpt.get());
-        return ResponseEntity.ok(Map.of("message", "Análise de otimização de parcelamentos processada com sucesso!"));
+        com.financetracker.ia.dto.FolgaLimiteResponse response = iaServiceCartao.processarOtimizacaoParcelamentoParaUsuario(usuarioOpt.get());
+        return ResponseEntity.ok(response);
     }
 
     // ─── Efeito Dominó: Prevenção de Falha de Cobrança (dedicada) ──────

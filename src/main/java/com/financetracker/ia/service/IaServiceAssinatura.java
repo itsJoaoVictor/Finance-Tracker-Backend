@@ -342,13 +342,19 @@ public class IaServiceAssinatura {
 
             NivelEssencialidade ess = parseEssencialidade(essencialidadeStr);
 
+            // Re-check: outro request pode ter inserido enquanto chamávamos a IA
+            cacheOpt = classificacaoRepository.findByAssinaturaId(assinatura.getId());
+            if (cacheOpt.isPresent()) {
+                IaClassificacaoAssinatura cache = cacheOpt.get();
+                NivelEssencialidade cachedEss = cache.isConfirmado()
+                        ? (cache.getRespostaUsuario() != null ? cache.getRespostaUsuario() : cache.getEssencialidade())
+                        : cache.getEssencialidade();
+                return toItem(nome, categoria, valorMensal, cachedEss, cache.isConfirmado());
+            }
+
             IaClassificacaoAssinatura classificacao = new IaClassificacaoAssinatura(
                     usuario, assinatura, ess, justificativa, confiavel);
-            try {
-                classificacaoRepository.save(classificacao);
-            } catch (Exception e) {
-                // Race condition
-            }
+            classificacaoRepository.save(classificacao);
 
             return toItem(nome, categoria, valorMensal, ess, confiavel);
 

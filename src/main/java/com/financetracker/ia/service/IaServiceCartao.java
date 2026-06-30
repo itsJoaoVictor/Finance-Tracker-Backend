@@ -685,7 +685,6 @@ public class IaServiceCartao {
         processarAvisoFechamentoParaUsuario(usuario);
         processarMelhorCartaoParaUsuario(usuario);
         processarConcentracaoGastosFaturaParaUsuario(usuario);
-        processarOtimizacaoParcelamentoParaUsuario(usuario);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -840,28 +839,25 @@ public class IaServiceCartao {
      *
      * Chamado ao entrar na tela /cartoes.
      */
-    public void processarOtimizacaoParcelamentoParaUsuario(Usuario usuario) {
+    public com.financetracker.ia.dto.FolgaLimiteResponse processarOtimizacaoParcelamentoParaUsuario(Usuario usuario) {
         UUID usuarioId = usuario.getId();
         LocalDate hoje = LocalDate.now();
-        LocalDate inicioMes = hoje.withDayOfMonth(1);
         List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
 
+        List<com.financetracker.ia.dto.FolgaLimiteItem> items = new ArrayList<>();
+
         for (Cartao cartao : cartoes) {
-            // 1. Buscar a fatura ABERTA do mês atual para este cartão
+            LocalDate mesReferenciaFatura = calcularMesReferenciaFatura(cartao, hoje);
             Optional<Fatura> faturaAtualOpt = faturaRepository
-                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, inicioMes);
+                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, mesReferenciaFatura)
+                    .filter(f -> f.getStatus() == StatusFatura.ABERTA);
 
             if (faturaAtualOpt.isEmpty()) continue;
             Fatura faturaAtual = faturaAtualOpt.get();
 
-            // Só analisa fatura ABERTA (que ainda está sendo construída)
-            if (STATUS_FECHADOS.contains(faturaAtual.getStatus())) continue;
-
-            // 2. Buscar transações COMPRA_CREDITO vinculadas a ESTA fatura específica
             List<Transacao> transacoesFatura = transacaoRepository
                     .findByFaturaIdAndAtivoTrue(faturaAtual.getId());
 
-            // Filtrar apenas parcelamentos (numeroParcela != null e totalParcelas > 1)
             List<Transacao> parcelasFatura = transacoesFatura.stream()
                     .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
                     .filter(t -> t.getNumeroParcela() != null && t.getTotalParcelas() != null)
@@ -870,8 +866,6 @@ public class IaServiceCartao {
 
             if (parcelasFatura.isEmpty()) continue;
 
-            // 3. Agrupar por descrição e verificar se ALGUMA parcela nesta fatura
-            //    é a ÚLTIMA do parcelamento (numeroParcela == totalParcelas)
             Map<String, List<Transacao>> porDescricao = parcelasFatura.stream()
                     .collect(Collectors.groupingBy(Transacao::getDescricao));
 
@@ -879,36 +873,17 @@ public class IaServiceCartao {
                 String descricao = entry.getKey();
                 List<Transacao> parcelas = entry.getValue();
 
-                // Verificar se existe a última parcela nesta fatura
                 boolean temUltimaParcela = parcelas.stream()
                         .anyMatch(t -> t.getNumeroParcela().equals(t.getTotalParcelas()));
                 if (!temUltimaParcela) continue;
 
-                // Encontrar a parcela de maior número para dados do insight
                 Transacao ultimaParcela = parcelas.stream()
                         .max(Comparator.comparingInt(Transacao::getNumeroParcela))
                         .orElse(null);
                 if (ultimaParcela == null) continue;
 
                 int totalParcelas = ultimaParcela.getTotalParcelas();
-                int parcelaAtual = ultimaParcela.getNumeroParcela();
                 BigDecimal valorParcela = ultimaParcela.getValor();
-
-                // 4. Verificar unicidade por cartaoId + descrição
-                //    Permite: "TV" no Nubank E "TV" no BB = 2 insights distintos
-                //    Bloqueia: "TV" no Nubank gerado duas vezes
-                //    Ex: "Ar Condicionado" e "TV" no mesmo cartão geram insights separados
-                boolean jaExiste = iaInsightRepository
-                        .existsByUsuarioIdAndTipoAndLidoFalseAndMetadadosContaining(
-                                usuarioId, TipoInsight.OTIMIZACAO_PARCELAMENTO,
-                                cartao.getId().toString())
-                        && iaInsightRepository
-                        .existsByUsuarioIdAndTipoAndLidoFalseAndMetadadosContaining(
-                                usuarioId, TipoInsight.OTIMIZACAO_PARCELAMENTO,
-                                "\"" + descricao + "\"");
-                if (jaExiste) continue;
-
-                // 5. Calcular impacto mensal (soma de todas as parcelas nesta fatura)
                 BigDecimal impactoMensal = parcelas.stream()
                         .map(Transacao::getValor)
                         .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -921,27 +896,23 @@ public class IaServiceCartao {
                         "economizar ou investir.",
                         descricao, valorParcela, totalParcelas, cartao.getNome());
 
-                String metadados = String.format(
-                        "{\"cartaoId\":\"%s\",\"cartaoNome\":\"%s\",\"descricao\":\"%s\"," +
-                        "\"valorParcela\":%.2f,\"totalParcelas\":%d,\"impactoMensal\":%.2f}",
-                        cartao.getId(), cartao.getNome(), descricao,
-                        valorParcela.doubleValue(), totalParcelas,
-                        impactoMensal.doubleValue());
+                String id = cartao.getId().toString() + "-" + descricao.hashCode();
 
-                IaInsight insight = new IaInsight(
-                        usuario,
-                        TipoInsight.OTIMIZACAO_PARCELAMENTO,
+                items.add(new com.financetracker.ia.dto.FolgaLimiteItem(
+                        id,
+                        cartao.getId(),
+                        cartao.getNome(),
+                        descricao,
+                        valorParcela,
+                        totalParcelas,
+                        impactoMensal,
                         titulo,
-                        mensagem,
-                        metadados
-                );
-                try {
-                    iaInsightRepository.save(insight);
-                } catch (Exception e) {
-                    // Race condition: outra requisição já salvou o mesmo insight
-                }
+                        mensagem
+                ));
             }
         }
+
+        return new com.financetracker.ia.dto.FolgaLimiteResponse(items);
     }
 
     // ═══════════════════════════════════════════════════════════════════
