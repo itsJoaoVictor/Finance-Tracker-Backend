@@ -17,4 +17,6 @@ public interface AgendamentoTransacaoRepository extends JpaRepository<Agendament
     Optional<AgendamentoTransacao> findByIdAndUsuarioIdAndAtivoTrue(UUID id, UUID usuarioId);
 
     List<AgendamentoTransacao> findByAtivoTrueAndDataProximaExecucaoLessThanEqual(LocalDate data);
+
+    List<AgendamentoTransacao> findByContaOrigemIdOrContaDestinoId(UUID contaOrigemId, UUID contaDestinoId);
 }

@@ -16,4 +16,6 @@ public interface CartaoRepository extends JpaRepository<Cartao, UUID> {
     Optional<Cartao> findByIdAndUsuarioIdAndAtivoTrue(UUID id, UUID usuarioId);
 
     long countByUsuarioIdAndAtivoTrue(UUID usuarioId);
+
+    List<Cartao> findByContaId(UUID contaId);
 }

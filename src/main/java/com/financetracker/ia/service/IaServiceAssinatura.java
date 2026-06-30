@@ -2,7 +2,13 @@ package com.financetracker.ia.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.financetracker.assinatura.entity.Assinatura;
+import com.financetracker.assinatura.enums.TipoRecorrencia;
 import com.financetracker.assinatura.repository.AssinaturaRepository;
+import com.financetracker.cartao.entity.Cartao;
+import com.financetracker.cartao.repository.CartaoRepository;
+import com.financetracker.ia.dto.DominioEfeitoDominoResponse;
+import com.financetracker.ia.dto.DominioEfeitoDominoResponse.AlertaCartao;
+import com.financetracker.ia.dto.DominioEfeitoDominoResponse.ItemRanking;
 import com.financetracker.ia.domain.IaClassificacaoAssinatura;
 import com.financetracker.ia.domain.IaInsight;
 import com.financetracker.ia.domain.NivelEssencialidade;
@@ -41,6 +47,7 @@ public class IaServiceAssinatura {
     private final AssinaturaRepository assinaturaRepository;
     private final TransacaoRepository transacaoRepository;
     private final FaturaRepository faturaRepository;
+    private final CartaoRepository cartaoRepository;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private final JdbcTemplate jdbcTemplate;
@@ -65,6 +72,7 @@ public class IaServiceAssinatura {
                                AssinaturaRepository assinaturaRepository,
                                TransacaoRepository transacaoRepository,
                                FaturaRepository faturaRepository,
+                               CartaoRepository cartaoRepository,
                                ObjectMapper objectMapper,
                                JdbcTemplate jdbcTemplate) {
         this.iaInsightRepository = iaInsightRepository;
@@ -72,6 +80,7 @@ public class IaServiceAssinatura {
         this.assinaturaRepository = assinaturaRepository;
         this.transacaoRepository = transacaoRepository;
         this.faturaRepository = faturaRepository;
+        this.cartaoRepository = cartaoRepository;
         this.objectMapper = objectMapper;
         this.restTemplate = new RestTemplate();
         this.jdbcTemplate = jdbcTemplate;
@@ -482,6 +491,7 @@ public class IaServiceAssinatura {
 
     /**
      * Retorna todas as assinaturas do usuário que precisam de confirmação.
+     * Intervalo adaptativo: OPCIONAL=15d, IMPORTANTE=45d, ESSENCIAL=90d.
      */
     public List<Map<String, Object>> obterPendentesConfirmacao(Usuario usuario) {
         UUID usuarioId = usuario.getId();
@@ -490,10 +500,20 @@ public class IaServiceAssinatura {
         List<IaClassificacaoAssinatura> nuncaConfirmadas = classificacaoRepository
                 .findByUsuarioIdAndConfirmadoFalse(usuarioId);
 
-        // 2. Classificações confirmadas há mais de 30 dias — revisão periódica
-        LocalDateTime limiteRevisao = LocalDateTime.now().minusDays(30);
-        List<IaClassificacaoAssinatura> expiradas = classificacaoRepository
-                .findByUsuarioIdAndConfirmadoTrueAndAtualizadoEmBefore(usuarioId, limiteRevisao);
+        // 2. Classificações confirmadas — revisão adaptativa por essencialidade
+        List<IaClassificacaoAssinatura> todasConfirmadas = classificacaoRepository
+                .findByUsuarioIdAndConfirmadoTrue(usuarioId);
+        LocalDateTime agora = LocalDateTime.now();
+        List<IaClassificacaoAssinatura> expiradas = todasConfirmadas.stream()
+                .filter(c -> {
+                    long diasRevisao = switch (c.getEssencialidade()) {
+                        case ESSENCIAL -> 90;
+                        case IMPORTANTE -> 45;
+                        case OPCIONAL, DISCRICIONARIA -> 15;
+                    };
+                    return c.getAtualizadoEm().isBefore(agora.minusDays(diasRevisao));
+                })
+                .toList();
 
         // Merge e deduplica por assinaturaId
         Map<UUID, IaClassificacaoAssinatura> porAssinatura = new LinkedHashMap<>();
@@ -635,7 +655,7 @@ public class IaServiceAssinatura {
             if (mesesAtivos <= 0 || mesesAtivos % 6 != 0) continue;
 
             BigDecimal valorMensal = calcularValorMensal(assinatura);
-            BigDecimal custoAcumulado = valorMensal.multiply(BigDecimal.valueOf(mesesAtivos));
+            BigDecimal custoAcumulado = calcularCustoAcumulado(assinatura, mesesAtivos);
 
             String assinaturaId = assinatura.getId().toString();
             boolean jaExiste = iaInsightRepository.existsByUsuarioIdAndTipoAndLidoFalseAndMetadadosContaining(
@@ -648,7 +668,8 @@ public class IaServiceAssinatura {
             boolean naoEssencial = "IMPORTANTE".equals(essencialidade) || "OPCIONAL".equals(essencialidade);
 
             String mensagem = montarMensagemAuditoriaZumbi(
-                    assinatura.getNome(), valorMensal, mesesAtivos, custoAcumulado, essencialidade, naoEssencial);
+                    assinatura.getNome(), assinatura.getTipoRecorrencia(),
+                    assinatura.getValor(), valorMensal, mesesAtivos, custoAcumulado, essencialidade, naoEssencial);
 
             String metadados = String.format(
                     "{\"assinaturaId\":\"%s\",\"nome\":\"%s\",\"mesesAtivos\":%d," +
@@ -666,12 +687,21 @@ public class IaServiceAssinatura {
         }
     }
 
-    private String montarMensagemAuditoriaZumbi(String nome, BigDecimal valorMensal,
+    private String montarMensagemAuditoriaZumbi(String nome, TipoRecorrencia recorrencia,
+                                                 BigDecimal valorUnitario, BigDecimal valorMensal,
                                                  long mesesAtivos, BigDecimal custoAcumulado,
                                                  String essencialidade, boolean naoEssencial) {
         StringBuilder msg = new StringBuilder();
-        msg.append(String.format("A assinatura \"%s\" está ativa há %d meses, com um custo de %s por mês.",
-                nome, mesesAtivos, formatarValor(valorMensal)));
+
+        String unidadeCobranca = switch (recorrencia) {
+            case ANUAL -> "ano";
+            case TRIMESTRAL -> "trimestre";
+            case MENSAL -> "mês";
+            default -> "período";
+        };
+
+        msg.append(String.format("A assinatura \"%s\" está ativa há %d meses, com custo de %s por %s.",
+                nome, mesesAtivos, formatarValor(valorUnitario), unidadeCobranca));
         msg.append(String.format("\n\nAté o momento, você já investiu %s nesse serviço.", formatarValor(custoAcumulado)));
         msg.append("\n\nComo esta é uma assinatura de uso recorrente, vale uma revisão rápida:");
         msg.append("\n• Você ainda utiliza esse serviço com a frequência esperada?");
@@ -694,6 +724,42 @@ public class IaServiceAssinatura {
 
     // ═══════════════════════════════════════════════════════════════════
     // CÁLCULOS
+
+    /**
+     * Calcula o custo real acumulado com base no tipo de recorrência.
+     * Para anuais/trimestrais, usa o valor unitário × número de cobranças efetivas.
+     */
+    private BigDecimal calcularCustoAcumulado(Assinatura assinatura, long mesesAtivos) {
+        BigDecimal valor = assinatura.getValor();
+        if (valor == null || valor.compareTo(BigDecimal.ZERO) == 0) return BigDecimal.ZERO;
+
+        return switch (assinatura.getTipoRecorrencia()) {
+            case ANUAL -> {
+                long cobrancas = mesesAtivos / 12;
+                if (mesesAtivos % 12 > 0) cobrancas++;
+                yield valor.multiply(BigDecimal.valueOf(cobrancas));
+            }
+            case TRIMESTRAL -> {
+                long cobrancas = mesesAtivos / 3;
+                if (mesesAtivos % 3 > 0) cobrancas++;
+                yield valor.multiply(BigDecimal.valueOf(cobrancas));
+            }
+            case PERSONALIZADO -> {
+                if (assinatura.getFrequencia() == null || assinatura.getUnidadeFrequencia() == null) {
+                    yield valor.multiply(BigDecimal.valueOf(mesesAtivos));
+                }
+                long mesesPorCobranca = switch (assinatura.getUnidadeFrequencia()) {
+                    case ANOS -> assinatura.getFrequencia() * 12L;
+                    case MESES -> assinatura.getFrequencia();
+                    case SEMANAS -> Math.max(1, assinatura.getFrequencia() / 4);
+                };
+                long cobrancas = mesesAtivos / mesesPorCobranca;
+                if (mesesAtivos % mesesPorCobranca > 0) cobrancas++;
+                yield valor.multiply(BigDecimal.valueOf(cobrancas));
+            }
+            default -> valor.multiply(BigDecimal.valueOf(mesesAtivos));
+        };
+    }
     // ═══════════════════════════════════════════════════════════════════
 
     private BigDecimal calcularValorMensal(Assinatura assinatura) {
@@ -784,5 +850,229 @@ public class IaServiceAssinatura {
 
     private String formatarValor(BigDecimal valor) {
         return String.format("R$ %.2f", valor);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EFEITO DOMINO — PREVENÇÃO DE FALHA DE COBRANÇA
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Detecta assinaturas que compartilham o mesmo cartão e cujas cobranças
+     * combinadas excedem o limite disponível. Gera um insight preventivo
+     * classificando o impacto (ALTO/MEDIO/BAIXO).
+     */
+    public void processarEfeitoDominio(Usuario usuario) {
+        UUID usuarioId = usuario.getId();
+        LocalDate hoje = LocalDate.now();
+        LocalDate fimJanela = hoje.plusDays(5);
+
+        List<Assinatura> proximas = assinaturaRepository
+                .findProximasCobrançasPorUsuario(usuarioId, hoje, fimJanela);
+
+        if (proximas.isEmpty()) {
+            limparInsightsDominioExistentes(usuarioId);
+            return;
+        }
+
+        // Agrupar por cartão
+        Map<UUID, List<Assinatura>> porCartao = proximas.stream()
+                .collect(Collectors.groupingBy(a -> a.getCartao().getId()));
+
+        List<IaInsight> insightsExistentes = iaInsightRepository
+                .findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId)
+                .stream()
+                .filter(ins -> ins.getTipo() == TipoInsight.EFEITO_DOMINO)
+                .collect(Collectors.toList());
+
+        List<AlertaCartao> alertas = new ArrayList<>();
+
+        for (Map.Entry<UUID, List<Assinatura>> entry : porCartao.entrySet()) {
+            UUID cartaoId = entry.getKey();
+            List<Assinatura> assinaturasCartao = entry.getValue();
+
+            Optional<Cartao> cartaoOpt = cartaoRepository.findById(cartaoId);
+            if (cartaoOpt.isEmpty()) continue;
+            Cartao cartao = cartaoOpt.get();
+
+            BigDecimal limiteDisponivel = cartao.getLimiteDisponivel();
+
+            // Ordenar por essencialidade (ESSENCIAL -> IMPORTANTE -> ORDEM -> data)
+            assinaturasCartao.sort(Comparator
+                    .comparingInt((Assinatura a) -> ordinalEssencialidade(a, usuarioId))
+                    .thenComparing(Assinatura::getDataProximaCobranca));
+
+            // Simular consumo sequencial
+            BigDecimal acumulado = BigDecimal.ZERO;
+            int essenciaisAfetadas = 0;
+            int importantesAfetadas = 0;
+            int opcionaisAfetadas = 0;
+            List<ItemRanking> ranking = new ArrayList<>();
+
+            for (Assinatura a : assinaturasCartao) {
+                boolean falha = acumulado.add(a.getValor()).compareTo(limiteDisponivel) > 0;
+                acumulado = acumulado.add(a.getValor());
+
+                NivelEssencialidade ess = obterEssencialidade(a, usuarioId);
+                String essStr = ess != null ? ess.name() : "OPCIONAL";
+
+                if (falha) {
+                    switch (essStr) {
+                        case "ESSENCIAL" -> essenciaisAfetadas++;
+                        case "IMPORTANTE" -> importantesAfetadas++;
+                        default -> opcionaisAfetadas++;
+                    }
+                }
+
+                ranking.add(new ItemRanking(
+                        a.getId(), a.getNome(), a.getValor(),
+                        essStr, a.getDataProximaCobranca(), falha));
+            }
+
+            // Só gerar alerta se ESSENCIAL ou IMPORTANTE afetada
+            if (essenciaisAfetadas == 0 && importantesAfetadas == 0) continue;
+
+            String nivelAlerta;
+            if (essenciaisAfetadas > 0) nivelAlerta = "ALTO";
+            else if (importantesAfetadas > 0) nivelAlerta = "MEDIO";
+            else nivelAlerta = "BAIXO";
+
+            // Dias até a primeira cobrança
+            int diasRestantes = (int) ChronoUnit.DAYS.between(hoje,
+                    assinaturasCartao.get(0).getDataProximaCobranca());
+
+            List<String> recomendacoes = gerarRecomendacoes(ranking, cartao.getNome());
+
+            alertas.add(new AlertaCartao(
+                    cartaoId, cartao.getNome(), limiteDisponivel,
+                    acumulado, diasRestantes,
+                    essenciaisAfetadas, importantesAfetadas, opcionaisAfetadas,
+                    nivelAlerta, ranking, recomendacoes));
+        }
+
+        // Upsert: um insight por cartão em risco
+        for (AlertaCartao alerta : alertas) {
+            String cartaoIdStr = alerta.cartaoId().toString();
+            Optional<IaInsight> existente = insightsExistentes.stream()
+                    .filter(ins -> ins.getMetadados() != null
+                            && ins.getMetadados().contains(cartaoIdStr))
+                    .findFirst();
+
+            String titulo = String.format("Risco de falha: %s", alerta.cartaoNome());
+            String mensagem = montarMensagemDominio(alerta);
+
+            // Serializar alerta como metadados
+            String metadadosStr;
+            try {
+                metadadosStr = objectMapper.writeValueAsString(alerta);
+            } catch (Exception e) {
+                metadadosStr = String.format(
+                        "{\"cartaoId\":\"%s\",\"cartaoNome\":\"%s\",\"nivelAlerta\":\"%s\"}",
+                        alerta.cartaoId(), alerta.cartaoNome(), alerta.nivelAlerta());
+            }
+
+            if (existente.isPresent()) {
+                IaInsight ins = existente.get();
+                ins.setTitulo(titulo);
+                ins.setMensagem(mensagem);
+                ins.setMetadados(metadadosStr);
+                ins.setLido(false);
+                iaInsightRepository.save(ins);
+            } else {
+                IaInsight insight = new IaInsight(usuario, TipoInsight.EFEITO_DOMINO,
+                        titulo, mensagem, metadadosStr);
+                try {
+                    iaInsightRepository.save(insight);
+                } catch (Exception e) {
+                    // Race condition
+                }
+            }
+        }
+
+        // Limpar insights de cartões que não estão mais em risco
+        Set<UUID> cartoesAlerta = alertas.stream()
+                .map(AlertaCartao::cartaoId).collect(Collectors.toSet());
+        for (IaInsight ins : insightsExistentes) {
+            if (ins.getMetadados() != null) {
+                try {
+                    com.fasterxml.jackson.databind.JsonNode node =
+                            objectMapper.readTree(ins.getMetadados());
+                    UUID cartaoIdInsight = UUID.fromString(node.get("cartaoId").asText());
+                    if (!cartoesAlerta.contains(cartaoIdInsight)) {
+                        ins.setLido(true);
+                        iaInsightRepository.save(ins);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private int ordinalEssencialidade(Assinatura a, UUID usuarioId) {
+        NivelEssencialidade ess = obterEssencialidade(a, usuarioId);
+        return switch (ess != null ? ess : NivelEssencialidade.OPCIONAL) {
+            case ESSENCIAL -> 0;
+            case IMPORTANTE -> 1;
+            case OPCIONAL, DISCRICIONARIA -> 2;
+        };
+    }
+
+    private NivelEssencialidade obterEssencialidade(Assinatura a, UUID usuarioId) {
+        Optional<IaClassificacaoAssinatura> classifOpt =
+                classificacaoRepository.findByAssinaturaId(a.getId());
+        if (classifOpt.isEmpty()) return NivelEssencialidade.OPCIONAL;
+        IaClassificacaoAssinatura classif = classifOpt.get();
+        return classif.isConfirmado()
+                ? (classif.getRespostaUsuario() != null
+                        ? classif.getRespostaUsuario() : classif.getEssencialidade())
+                : classif.getEssencialidade();
+    }
+
+    private List<String> gerarRecomendacoes(List<ItemRanking> ranking, String cartaoNome) {
+        List<String> recs = new ArrayList<>();
+        boolean temEssencial = ranking.stream()
+                .anyMatch(r -> r.falha() && "ESSENCIAL".equals(r.essencialidade()));
+        boolean temImportante = ranking.stream()
+                .anyMatch(r -> r.falha() && "IMPORTANTE".equals(r.essencialidade()));
+
+        if (temEssencial) {
+            ranking.stream().filter(r -> r.falha() && "ESSENCIAL".equals(r.essencialidade()))
+                    .findFirst().ifPresent(r ->
+                            recs.add(String.format("Priorize o pagamento do %s (ESSENCIAL).", r.nome())));
+        }
+        if (temImportante) {
+            ranking.stream().filter(r -> r.falha() && "IMPORTANTE".equals(r.essencialidade()))
+                    .findFirst().ifPresent(r ->
+                            recs.add(String.format("Considere alterar o cartão do %s para outro com limite disponível.", r.nome())));
+        }
+        long totalAfetadas = ranking.stream().filter(ItemRanking::falha).count();
+        if (totalAfetadas > 1) {
+            recs.add("Reorganizar o método de pagamento agora evita a interrupção de serviços essenciais.");
+        }
+        recs.add(String.format("Libere limite no cartão %s ou antecipe o pagamento da fatura.", cartaoNome));
+        return recs;
+    }
+
+    private String montarMensagemDominio(AlertaCartao alerta) {
+        long afetadas = alerta.ranking().stream().filter(ItemRanking::falha).count();
+        return String.format(
+                "Nos próximos %d dias, %d assinatura(s) utilizarão o cartão %s, " +
+                "totalizando %s. O limite disponível é de %s. " +
+                "Se nenhuma ação for tomada, %d assinatura(s) poderão falhar.",
+                alerta.diasRestantes(),
+                alerta.ranking().size(), alerta.cartaoNome(),
+                formatarValor(alerta.totalCobranca()),
+                formatarValor(alerta.limiteDisponivel()),
+                afetadas);
+    }
+
+    private void limparInsightsDominioExistentes(UUID usuarioId) {
+        List<IaInsight> existentes = iaInsightRepository
+                .findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId)
+                .stream()
+                .filter(ins -> ins.getTipo() == TipoInsight.EFEITO_DOMINO)
+                .toList();
+        for (IaInsight ins : existentes) {
+            ins.setLido(true);
+            iaInsightRepository.save(ins);
+        }
     }
 }

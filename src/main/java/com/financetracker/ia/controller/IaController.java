@@ -410,4 +410,22 @@ public class IaController {
         return ResponseEntity.ok(Map.of("message", "Análise de otimização de parcelamentos processada com sucesso!"));
     }
 
+    // ─── Efeito Dominó: Prevenção de Falha de Cobrança (dedicada) ──────
+
+    /**
+     * Endpoint dedicado: detecta assinaturas com risco de falha por
+     * limite insuficiente no cartão compartilhado.
+     * Chamado ao entrar na tela /assinaturas.
+     */
+    @PostMapping("/efeito-dominio")
+    public ResponseEntity<?> verificarEfeitoDominio(@AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        iaServiceAssinatura.processarEfeitoDominio(usuarioOpt.get());
+        return ResponseEntity.ok(Map.of("message", "Efeito Dominó analisado com sucesso!"));
+    }
+
 }

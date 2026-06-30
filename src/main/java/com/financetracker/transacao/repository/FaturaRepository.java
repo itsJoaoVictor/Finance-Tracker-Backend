@@ -27,5 +27,7 @@ public interface FaturaRepository extends JpaRepository<Fatura, UUID> {
 
     List<Fatura> findByUsuarioId(UUID usuarioId);
 
+    List<Fatura> findByCartaoId(UUID cartaoId);
+
     boolean existsByCartaoIdAndStatus(UUID cartaoId, StatusFatura status);
 }

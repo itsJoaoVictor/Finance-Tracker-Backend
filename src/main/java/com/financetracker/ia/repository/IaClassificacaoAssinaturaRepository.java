@@ -4,6 +4,9 @@ import com.financetracker.ia.domain.IaClassificacaoAssinatura;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -17,8 +20,12 @@ public interface IaClassificacaoAssinaturaRepository extends JpaRepository<IaCla
 
     List<IaClassificacaoAssinatura> findByUsuarioIdAndConfirmadoFalse(UUID usuarioId);
 
-    /** Classificações confirmadas há mais de N dias — precisa de revisão */
-    List<IaClassificacaoAssinatura> findByUsuarioIdAndConfirmadoTrueAndAtualizadoEmBefore(UUID usuarioId, java.time.LocalDateTime dataLimite);
+    List<IaClassificacaoAssinatura> findByUsuarioIdAndConfirmadoTrue(UUID usuarioId);
 
     boolean existsByAssinaturaIdAndConfirmadoTrue(UUID assinaturaId);
+
+    @Modifying
+    @Query("DELETE FROM IaClassificacaoAssinatura c WHERE c.assinatura.id IN :ids")
+    void deleteByAssinaturaIds(@Param("ids") List<UUID> assinaturaIds);
 }
+

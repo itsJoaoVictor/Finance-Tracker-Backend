@@ -41,9 +41,37 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
 
     Optional<Transacao> findByIdAndUsuarioIdAndAtivoTrue(UUID id, UUID usuarioId);
 
+    List<Transacao> findByCartaoId(UUID cartaoId);
+
+    List<Transacao> findByContaOrigemIdOrContaDestinoId(UUID contaOrigemId, UUID contaDestinoId);
+
     long countByUsuarioIdAndAtivoTrue(UUID usuarioId);
 
     List<Transacao> findByFaturaIdAndAtivoTrue(UUID faturaId);
+
+    @Query("SELECT t FROM Transacao t WHERE t.usuario.id = :usuarioId AND t.cartao.id = :cartaoId " +
+           "AND t.descricao = :descricao AND t.totalParcelas = :totalParcelas AND t.ativo = true " +
+           "ORDER BY t.numeroParcela ASC")
+    List<Transacao> findParcelasAtivas(
+        @Param("usuarioId") UUID usuarioId,
+        @Param("cartaoId") UUID cartaoId,
+        @Param("descricao") String descricao,
+        @Param("totalParcelas") int totalParcelas);
+
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.fatura.id = :faturaId " +
+           "AND t.ativo = true AND t.tipo = 'COMPRA_CREDITO'")
+    BigDecimal sumValorByFaturaIdAndAtivoTrue(@Param("faturaId") UUID faturaId);
+
+    /** Soma apenas crédito rotativo (parcela única ou primeira parcela de assinatura) — exclui parcelas 2/3+ */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.fatura.id = :faturaId " +
+           "AND t.ativo = true AND t.tipo = 'COMPRA_CREDITO' " +
+           "AND (t.totalParcelas IS NULL OR t.totalParcelas <= 1)")
+    BigDecimal sumRotativoByFaturaId(@Param("faturaId") UUID faturaId);
+
+    @Query("SELECT COALESCE(SUM(CASE WHEN f.status != 'PAGA' THEN f.valorTotal - f.valorPago ELSE 0 END), 0) " +
+           "FROM Fatura f WHERE f.cartao.id = :cartaoId " +
+           "AND NOT (f.status = 'ATRASADA' AND f.rolladoOver = true)")
+    BigDecimal sumFaturaAbertaByCartaoId(@Param("cartaoId") UUID cartaoId);
 
     List<Transacao> findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(
         UUID usuarioId, LocalDate inicio, LocalDate fim);

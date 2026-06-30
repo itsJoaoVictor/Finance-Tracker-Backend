@@ -88,17 +88,24 @@ public class IaServiceCartao {
     public ProjecaoCartoesResponse projetarFaturasParaUsuario(Usuario usuario) {
         UUID usuarioId = usuario.getId();
         LocalDate hoje = LocalDate.now();
-        LocalDate inicioMes = hoje.withDayOfMonth(1);
         List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
 
         List<ProjecaoCartaoDTO> projecoes = new ArrayList<>();
         List<Map<String, Object>> dadosParaIa = new ArrayList<>();
 
         for (Cartao cartao : cartoes) {
+            // ── Mês de referência da fatura (ex: julho quando diaFechamento=5 e hoje=28/jun) ──
+            LocalDate mesReferenciaFatura = calcularMesReferenciaFatura(cartao, hoje);
+            // ── Início do ciclo de faturamento (último fechamento → dia 5 de junho) ──
+            LocalDate dataInicioCiclo = mesReferenciaFatura.minusMonths(1).withDayOfMonth(cartao.getDiaFechamento());
+            // se o dia de fechamento não existe no mês (ex: 31 em fev), usa o último dia
+            int diaEfetivo = Math.min(cartao.getDiaFechamento(), dataInicioCiclo.lengthOfMonth());
+            dataInicioCiclo = dataInicioCiclo.withDayOfMonth(diaEfetivo);
+
             // ── 1. HISTÓRICO VARIÁVEL (6 meses): gastos variáveis (exclui parcelas 2/3+ e assinaturas) ──
-            LocalDate seisMesesAtras = hoje.minusMonths(6).withDayOfMonth(1);
+            LocalDate seisMesesAtras = dataInicioCiclo.minusMonths(6);
             BigDecimal somaVariavelHistorica = transacaoRepository.sumGastosVariaveisPorCartao(
-                    usuarioId, cartao.getId(), seisMesesAtras, inicioMes.minusDays(1));
+                    usuarioId, cartao.getId(), seisMesesAtras, dataInicioCiclo.minusDays(1));
 
             // ── 2. HISTÓRICO TOTAL (6 meses): valorTotal das faturas fechadas ──
             List<Fatura> faturasHistoricas = faturaRepository
@@ -106,7 +113,7 @@ public class IaServiceCartao {
                     .stream()
                     .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
                     .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
-                    .filter(f -> f.getMesReferencia().isBefore(inicioMes))
+                    .filter(f -> f.getMesReferencia().isBefore(mesReferenciaFatura))
                     .collect(Collectors.toList());
 
             BigDecimal mediaTotalHistorica = null;
@@ -125,32 +132,32 @@ public class IaServiceCartao {
                         .divide(BigDecimal.valueOf(mesesHistorico), 2, RoundingMode.HALF_UP);
             }
 
-            // ── 3. GASTO VARIÁVEL ACUMULADO (mês atual até hoje) ──
+            // ── 3. GASTO VARIÁVEL ACUMULADO (do início do ciclo até hoje) ──
             BigDecimal valorAtualVariavel = transacaoRepository.sumGastosVariaveisPorCartao(
-                    usuarioId, cartao.getId(), inicioMes, hoje);
+                    usuarioId, cartao.getId(), dataInicioCiclo, hoje);
 
-            // ── 4. ASSINATURAS PENDENTES (dataProximaCobranca no mês atual) ──
+            // ── 4. ASSINATURAS PENDENTES (dataProximaCobranca até fim do mês) ──
             LocalDate fimMes = hoje.withDayOfMonth(hoje.lengthOfMonth());
             List<Assinatura> assinaturasPendentes = assinaturaRepository
                     .findByCartaoIdAndAtivoTrueAndDataProximaCobrancaBetween(
-                            cartao.getId(), inicioMes, fimMes);
+                            cartao.getId(), dataInicioCiclo, fimMes);
             BigDecimal totalAssinaturasPendentes = assinaturasPendentes.stream()
                     .map(Assinatura::getValor)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-            // ── 5. ASSINATURAS JÁ COBRADAS (transações "Assinatura: %" no mês) ──
+            // ── 5. ASSINATURAS JÁ COBRADAS (transações "Assinatura: %" no ciclo) ──
             BigDecimal totalAssinaturasCobradas = transacaoRepository.sumAssinaturasCobradasNoMes(
-                    usuarioId, cartao.getId(), inicioMes, hoje);
+                    usuarioId, cartao.getId(), dataInicioCiclo, hoje);
 
             // ── 6. Verificar se fatura atual está ABERTA ou FECHADA ──
             Optional<Fatura> faturaAtualOpt = faturaRepository
-                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, inicioMes);
+                    .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, mesReferenciaFatura);
 
             boolean faturaFechada = faturaAtualOpt
                     .map(f -> STATUS_FECHADOS.contains(f.getStatus()))
                     .orElse(false);
 
-            long diasPassados = ChronoUnit.DAYS.between(inicioMes, hoje) + 1;
+            long diasPassados = ChronoUnit.DAYS.between(dataInicioCiclo, hoje) + 1;
 
             // ── 7. Montar DTO conforme o status ──
             if (faturaFechada && faturaAtualOpt.isPresent()) {
@@ -201,18 +208,19 @@ public class IaServiceCartao {
                 ));
 
             } else {
-                // ── FATURA ABERTA ou SEM FATURA: Projeção Híbrida ──
+                // ── FATURA ABERTA: valor real da fatura + projeção de gastos futuros ──
+                // ── SEM FATURA: fallback antigo (sem dados) ──
                 String statusFatura = faturaAtualOpt.isPresent() ? "ABERTA" : "SEM_FATURA";
 
-                if (diasPassados >= 3 && (valorAtualVariavel.compareTo(BigDecimal.ZERO) > 0
-                        || totalAssinaturasCobradas.compareTo(BigDecimal.ZERO) > 0
-                        || totalAssinaturasPendentes.compareTo(BigDecimal.ZERO) > 0)) {
+                if (faturaAtualOpt.isPresent()) {
+                    // Fatura ABERTA → base é o valorTotal real (inclui tudo: variáveis, parcelas, assinaturas)
+                    BigDecimal valorAtualFatura = faturaAtualOpt.get().getValorTotal();
+                    if (valorAtualFatura.compareTo(BigDecimal.ZERO) < 0) valorAtualFatura = BigDecimal.ZERO;
 
-                    // ── PROJEÇÃO HÍBRIDA ──
-                    // Extrapolação: média variável × dias restantes
                     long diasNoMes = hoje.lengthOfMonth();
                     long diasRestantes = diasNoMes - diasPassados;
 
+                    // Extrapolação: média variável diária × dias restantes
                     BigDecimal gastoFuturoVariavel = BigDecimal.ZERO;
                     if (mediaVariavelHistorica != null && mediaVariavelHistorica.compareTo(BigDecimal.ZERO) > 0) {
                         BigDecimal mediaDiariaVariavel = mediaVariavelHistorica
@@ -222,82 +230,53 @@ public class IaServiceCartao {
                                 .setScale(2, RoundingMode.HALF_UP);
                     }
 
-                    // Projeção = variável acumulado + variável futuro + assinaturas pendentes + assinaturas cobradas
-                    BigDecimal projecaoHibrida = valorAtualVariavel
+                    BigDecimal projecao = valorAtualFatura
                             .add(gastoFuturoVariavel)
-                            .add(totalAssinaturasPendentes)
-                            .add(totalAssinaturasCobradas);
+                            .add(totalAssinaturasPendentes);
 
                     // ── CLASSIFICAÇÃO (usa média total — é o que o usuário paga) ──
                     BigDecimal desvioPercentual = null;
-                    String classificacao = "PRIMEIRO_MES";
+                    String classificacao = "DENTRO";
                     String mensagem = String.format(
-                            "Projeção inicial para %s: %s (apenas %d dias de dados).",
-                            cartao.getNome(), formatarValor(projecaoHibrida), diasPassados);
+                            "A fatura do %s está em %s com %d dias restantes. Projeção: %s.",
+                            cartao.getNome(), formatarValor(valorAtualFatura), diasRestantes, formatarValor(projecao));
 
                     if (mediaTotalHistorica != null && mediaTotalHistorica.compareTo(BigDecimal.ZERO) > 0
-                            && projecaoHibrida.compareTo(BigDecimal.ZERO) > 0) {
-                        desvioPercentual = projecaoHibrida.subtract(mediaTotalHistorica)
+                            && projecao.compareTo(BigDecimal.ZERO) > 0) {
+                        desvioPercentual = projecao.subtract(mediaTotalHistorica)
                                 .divide(mediaTotalHistorica, 4, RoundingMode.HALF_UP)
                                 .multiply(BigDecimal.valueOf(100))
                                 .setScale(1, RoundingMode.HALF_UP);
                         double desvio = desvioPercentual.doubleValue();
                         if (desvio > 10.0) {
                             classificacao = "ACIMA";
+                            mensagem = String.format(
+                                    "Neste ritmo, a fatura do %s fechará em %s — %d%% acima da média dos últimos %d meses (%s).",
+                                    cartao.getNome(), formatarValor(projecao),
+                                    Math.round(desvio), mesesHistorico, formatarValor(mediaTotalHistorica));
                         } else if (desvio < -10.0) {
                             classificacao = "ABAIXO";
+                            mensagem = String.format(
+                                    "Neste ritmo, a fatura do %s fechará em %s — %d%% abaixo da média dos últimos %d meses (%s). Excelente!",
+                                    cartao.getNome(), formatarValor(projecao),
+                                    Math.abs(Math.round(desvio)), mesesHistorico, formatarValor(mediaTotalHistorica));
                         } else {
-                            classificacao = "DENTRO";
+                            mensagem = String.format(
+                                    "Neste ritmo, a fatura do %s fechará em %s, dentro da faixa esperada (média: %s).",
+                                    cartao.getNome(), formatarValor(projecao), formatarValor(mediaTotalHistorica));
                         }
-                        mensagem = String.format(
-                                "Neste ritmo, a fatura do %s fechará em %s — %s%d%% vs média de %s.",
-                                cartao.getNome(), formatarValor(projecaoHibrida),
-                                desvio > 0 ? "" : "",
-                                Math.abs(Math.round(desvio)), formatarValor(mediaTotalHistorica));
                     }
-
-                    // Montar dados para IA (extrapolação já calculada, mas IA pode refinar)
-                    Map<String, BigDecimal> topCategorias = transacaoRepository
-                            .findByUsuarioIdAndAtivoTrueAndDataBetweenOrderByDataAsc(usuarioId, inicioMes, hoje)
-                            .stream()
-                            .filter(t -> t.getCartao() != null && t.getCartao().getId().equals(cartao.getId()))
-                            .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
-                            .filter(t -> t.getNumeroParcela() == null || t.getNumeroParcela() == 1)
-                            .filter(t -> t.getCategoria() != null)
-                            .collect(Collectors.groupingBy(
-                                    t -> t.getCategoria().getNome(),
-                                    Collectors.reducing(BigDecimal.ZERO, Transacao::getValor, BigDecimal::add)
-                            ));
-
-                    String topCategoriasStr = topCategorias.entrySet().stream()
-                            .sorted(Map.Entry.<String, BigDecimal>comparingByValue().reversed())
-                            .limit(5)
-                            .map(e -> e.getKey() + " " + formatarValor(e.getValue()))
-                            .collect(Collectors.joining(", "));
-
-                    Map<String, Object> dadoCartao = new HashMap<>();
-                    dadoCartao.put("cartaoId", cartao.getId());
-                    dadoCartao.put("cartaoNome", cartao.getNome());
-                    dadoCartao.put("corHexadecimal", cartao.getCorHexadecimal() != null ? cartao.getCorHexadecimal() : "");
-                    dadoCartao.put("mediaHistorica", mediaTotalHistorica != null ? mediaTotalHistorica : BigDecimal.ZERO);
-                    dadoCartao.put("gastoMes", valorAtualVariavel.add(totalAssinaturasCobradas));
-                    dadoCartao.put("diasPassados", diasPassados);
-                    dadoCartao.put("diasNoMes", diasNoMes);
-                    dadoCartao.put("projecaoExtrapolada", projecaoHibrida);
-                    dadoCartao.put("topCategoriasStr", topCategoriasStr);
-                    dadoCartao.put("statusFatura", statusFatura);
-                    dadoCartao.put("mesesHistorico", (long) mesesHistorico);
-                    dadosParaIa.add(dadoCartao);
 
                     projecoes.add(new ProjecaoCartaoDTO(
                             cartao.getId(), cartao.getNome(), cartao.getCorHexadecimal(),
-                            statusFatura, valorAtualVariavel, projecaoHibrida, false,
+                            statusFatura, valorAtualFatura, projecao, false,
                             null, mediaTotalHistorica, mesesHistorico,
                             desvioPercentual, classificacao, mensagem,
-                            (int) hoje.lengthOfMonth(), (int) diasPassados
+                            (int) diasNoMes, (int) diasPassados
                     ));
 
                 } else {
+                    // SEM FATURA: sem dados suficientes
                     String classificacao = mesesHistorico == 0 ? "NOVO" : "SEM_DADOS";
                     String mensagem = mesesHistorico == 0
                             ? String.format("Cartão %s sem histórico de faturas fechadas.", cartao.getNome())
@@ -971,5 +950,18 @@ public class IaServiceCartao {
 
     private String formatarValor(BigDecimal valor) {
         return String.format("R$ %.2f", valor);
+    }
+
+    /**
+     * Calcula o mês de referência da fatura com base no dia de fechamento do cartão.
+     * Se hoje é antes do dia de fechamento → mês atual; caso contrário → próximo mês.
+     */
+    private LocalDate calcularMesReferenciaFatura(Cartao cartao, LocalDate data) {
+        int diaFechamento = cartao.getDiaFechamento();
+        if (data.getDayOfMonth() < diaFechamento) {
+            return data.withDayOfMonth(1);
+        } else {
+            return data.plusMonths(1).withDayOfMonth(1);
+        }
     }
 }

@@ -340,6 +340,9 @@ public class IaService {
         processarReforcoPositivo(usuario);
         processarAceleradorMetas(usuario);
         processarInflacaoPessoal(usuario);
+
+        // ── Prevenção de falha de cobrança ──────────────────────────
+        iaServiceAssinatura.processarEfeitoDominio(usuario);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -734,9 +737,12 @@ public class IaService {
         if (metasAtivas.isEmpty()) return;
 
         List<Categoria> categorias = categoriaRepository.findAllByUsuarioId(usuarioId);
+        List<TipoTransacao> tiposSaida = List.of(
+                TipoTransacao.COMPRA_CREDITO, TipoTransacao.PIX,
+                TipoTransacao.TRANSFERENCIA, TipoTransacao.SAQUE, TipoTransacao.PAGAMENTO_CREDITO);
         for (Categoria categoria : categorias) {
-            BigDecimal gastoMes = transacaoRepository.sumValorByCategoriaAndPeriodoSemFiltroTipo(
-                    usuarioId, categoria.getId(), inicioMes, hoje);
+            BigDecimal gastoMes = transacaoRepository.sumValorByCategoriaAndPeriodo(
+                    usuarioId, categoria.getId(), inicioMes, hoje, tiposSaida);
             if (gastoMes.compareTo(BigDecimal.valueOf(30.00)) < 0) continue; // Mínimo relevante
 
             for (MetasEconomia meta : metasAtivas) {

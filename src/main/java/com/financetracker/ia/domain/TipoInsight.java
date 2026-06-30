@@ -24,5 +24,8 @@ public enum TipoInsight {
 
     // ── Insights de Cartão (IaServiceCartao) ──────────────────────────
     CONCENTRACAO_GASTOS_FATURA,
-    OTIMIZACAO_PARCELAMENTO
+    OTIMIZACAO_PARCELAMENTO,
+
+    // ── Insights de Prevenção (IaServiceAssinatura) ──────────────────────
+    EFEITO_DOMINO
 }

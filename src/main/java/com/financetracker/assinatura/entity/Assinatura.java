@@ -24,7 +24,7 @@ public class Assinatura {
     private Usuario usuario;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "cartao_id", nullable = false)
+    @JoinColumn(name = "cartao_id")
     private Cartao cartao;
 
     @ManyToOne(fetch = FetchType.LAZY)

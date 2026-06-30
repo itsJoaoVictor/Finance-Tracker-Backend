@@ -155,6 +155,18 @@ public class TransacaoService {
         }
     }
 
+    private void recalcularValorFatura(Fatura fatura) {
+        BigDecimal total = transacaoRepository.sumValorByFaturaIdAndAtivoTrue(fatura.getId());
+        fatura.setValorTotal(total != null ? total : BigDecimal.ZERO);
+        faturaRepository.save(fatura);
+    }
+
+    private void recalcularLimiteDisponivel(Cartao cartao) {
+        BigDecimal usado = transacaoRepository.sumFaturaAbertaByCartaoId(cartao.getId());
+        cartao.setLimiteDisponivel(cartao.getLimite().subtract(usado != null ? usado : BigDecimal.ZERO));
+        cartaoRepository.save(cartao);
+    }
+
     private Fatura getOrCreateFatura(Cartao cartao, Usuario usuario, LocalDate mesReferencia) {
         Optional<Fatura> existente = faturaRepository
                 .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuario.getId(), mesReferencia);
@@ -292,8 +304,6 @@ public class TransacaoService {
                 if (cartao.getLimiteDisponivel().compareTo(valorTotalCompra) < 0) {
                     throw new LimiteInsuficienteException("Limite de crédito insuficiente.");
                 }
-                cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().subtract(valorTotalCompra));
-                cartaoRepository.save(cartao);
 
                 // Determinar o mês de referência inicial com base na data da compra
                 LocalDate mesReferenciaInicial = calcularMesReferenciaFatura(cartao, request.data());
@@ -332,16 +342,22 @@ public class TransacaoService {
                     Transacao saved = transacaoRepository.save(t);
                     if (i == 1) primeiraTransacao = saved;
 
-                    // Soma o valor à fatura
-                    faturaAlvo.setValorTotal(faturaAlvo.getValorTotal().add(valorAtual));
-                    if (faturaAlvo.getStatus() == StatusFatura.PAGA) {
-                        faturaAlvo.setValorPago(faturaAlvo.getValorTotal());
-                        // Liberar limite do cartão imediatamente se for uma fatura histórica já paga
-                        cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(valorAtual));
+                    recalcularValorFatura(faturaAlvo);
+
+                    // Parcela retroativa: se a fatura já venceu, marca como PAGA
+                    // (usuário novo cadastrando compras passadas → assume-se como pagas)
+                    LocalDate hoje = LocalDate.now();
+                    if (hoje.isAfter(faturaAlvo.getDataVencimento())) {
+                        faturaAlvo.setValorPago(faturaAlvo.getValorPago().add(valorAtual));
+                        if (faturaAlvo.getValorPago().compareTo(faturaAlvo.getValorTotal()) >= 0) {
+                            faturaAlvo.setStatus(StatusFatura.PAGA);
+                        } else {
+                            faturaAlvo.setStatus(StatusFatura.PAGA_PARCIAL);
+                        }
+                        faturaRepository.save(faturaAlvo);
                     }
-                    faturaRepository.save(faturaAlvo);
                 }
-                cartaoRepository.save(cartao);
+                recalcularLimiteDisponivel(cartao);
 
                 TransacaoResponse response = new TransacaoResponse(primeiraTransacao);
                 try {
@@ -539,14 +555,13 @@ public class TransacaoService {
                 cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(valor));
                 cartaoRepository.save(cartao);
 
-                // Diminui o valor total da fatura (não altera status - continua ABERTA)
-                fatura.setValorTotal(fatura.getValorTotal().subtract(valor));
-                if (fatura.getValorTotal().compareTo(BigDecimal.ZERO) < 0) {
-                    fatura.setValorTotal(BigDecimal.ZERO);
-                }
+                // Registra pagamento antecipado (não altera status - continua ABERTA)
+                fatura.setValorPago(fatura.getValorPago().add(valor));
                 faturaRepository.save(fatura);
             }
         }
+
+        recalcularLimiteDisponivel(cartao);
 
         // Criar transação de pagamento
         Transacao transacao = new Transacao();
@@ -620,31 +635,34 @@ public class TransacaoService {
                 Cartao cartao = transacao.getCartao();
                 if (cartao == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cartão não associado.");
 
-                if (request.valor() == null || request.valor().compareTo(transacao.getValor()) >= 0) {
-                    // Estorno total
-                    cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(transacao.getValor()));
-                    cartaoRepository.save(cartao);
+                boolean estornoTotal = request.valor() == null || request.valor().compareTo(transacao.getValor()) >= 0;
 
+                if (estornoTotal && transacao.getTotalParcelas() != null && transacao.getTotalParcelas() > 1) {
+                    // Estorno total de compra parcelada: inativar TODAS as parcelas em todas as faturas
+                    Set<UUID> faturasRecalcular = new HashSet<>();
+                    List<Transacao> todasParcelas = transacaoRepository.findParcelasAtivas(
+                        usuario.getId(), cartao.getId(), transacao.getDescricao(), transacao.getTotalParcelas());
+
+                    for (Transacao p : todasParcelas) {
+                        if (p.getFatura() != null) faturasRecalcular.add(p.getFatura().getId());
+                        p.setAtivo(false);
+                        p.setEstornada(true);
+                        transacaoRepository.save(p);
+                    }
+                    for (UUID fid : faturasRecalcular) {
+                        faturaRepository.findById(fid).ifPresent(this::recalcularValorFatura);
+                    }
+                } else {
+                    // Estorno de parcela única, ou estorno parcial
                     Fatura fatura = transacao.getFatura();
                     if (fatura != null) {
-                        if (fatura.getStatus() == StatusFatura.ABERTA) {
-                            fatura.setValorTotal(fatura.getValorTotal().subtract(transacao.getValor()));
-                            if (fatura.getValorTotal().compareTo(BigDecimal.ZERO) < 0)
-                                fatura.setValorTotal(BigDecimal.ZERO);
-                            faturaRepository.save(fatura);
-                        } else {
-                            // Fatura já fechada/paga: gerar lançamento de crédito na fatura aberta atual
+                        if (fatura.getStatus() != StatusFatura.ABERTA) {
+                            // Fatura fechada/paga: gerar crédito na fatura aberta atual
                             Fatura faturaAtual = getOrCreateFaturaAberta(cartao, usuario, LocalDate.now());
-                            // Registrar crédito na fatura atual
-                            faturaAtual.setValorTotal(faturaAtual.getValorTotal().subtract(transacao.getValor()));
-                            if (faturaAtual.getValorTotal().compareTo(BigDecimal.ZERO) < 0)
-                                faturaAtual.setValorTotal(BigDecimal.ZERO);
-                            faturaRepository.save(faturaAtual);
-
                             Transacao credito = new Transacao();
                             credito.setUsuario(usuario);
                             credito.setDescricao("Estorno: " + transacao.getDescricao());
-                            credito.setValor(transacao.getValor());
+                            credito.setValor(valorEstorno);
                             credito.setTipo(TipoTransacao.COMPRA_CREDITO);
                             credito.setCartao(cartao);
                             credito.setFatura(faturaAtual);
@@ -652,43 +670,17 @@ public class TransacaoService {
                             credito.setData(LocalDate.now());
                             credito.setAtivo(true);
                             transacaoRepository.save(credito);
+                            recalcularValorFatura(faturaAtual);
                         }
-                    }
-                } else {
-                    // Estorno parcial (RN-14.2)
-                    cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(valorEstorno));
-                    cartaoRepository.save(cartao);
-
-                    Fatura fatura = transacao.getFatura();
-                    if (fatura != null && fatura.getStatus() == StatusFatura.ABERTA) {
-                        fatura.setValorTotal(fatura.getValorTotal().subtract(valorEstorno));
-                        if (fatura.getValorTotal().compareTo(BigDecimal.ZERO) < 0)
-                            fatura.setValorTotal(BigDecimal.ZERO);
-                        faturaRepository.save(fatura);
-                    } else if (fatura != null) {
-                        // Lançamento de crédito na fatura aberta atual
-                        Fatura faturaAtual = getOrCreateFaturaAberta(cartao, usuario, LocalDate.now());
-                        faturaAtual.setValorTotal(faturaAtual.getValorTotal().subtract(valorEstorno));
-                        if (faturaAtual.getValorTotal().compareTo(BigDecimal.ZERO) < 0)
-                            faturaAtual.setValorTotal(BigDecimal.ZERO);
-                        faturaRepository.save(faturaAtual);
+                        recalcularValorFatura(fatura);
                     }
                 }
-
-                // Se for parcelada, inativar parcelas futuras
-                if (transacao.getTotalParcelas() != null && transacao.getTotalParcelas() > 1) {
-                    List<Transacao> parcelas = transacaoRepository.findByFaturaIdAndAtivoTrue(transacao.getFatura().getId());
-                    for (Transacao p : parcelas) {
-                        if (!p.getId().equals(transacaoId) && p.getAtivo()) {
-                            p.setAtivo(false);
-                            transacaoRepository.save(p);
-                        }
-                    }
-                }
+                recalcularLimiteDisponivel(cartao);
             }
         }
 
         transacao.setEstornada(true);
+        transacao.setAtivo(false);
         return new TransacaoResponse(transacaoRepository.save(transacao));
     }
 
@@ -763,16 +755,12 @@ public class TransacaoService {
             }
             case COMPRA_CREDITO -> {
                 Cartao cartao = t.getCartao();
-                if (cartao != null) {
-                    cartao.setLimiteDisponivel(cartao.getLimiteDisponivel().add(t.getValor()));
-                    cartaoRepository.save(cartao);
-                }
                 Fatura fatura = t.getFatura();
                 if (fatura != null) {
-                    fatura.setValorTotal(fatura.getValorTotal().subtract(t.getValor()));
-                    if (fatura.getValorTotal().compareTo(BigDecimal.ZERO) < 0)
-                        fatura.setValorTotal(BigDecimal.ZERO);
-                    faturaRepository.save(fatura);
+                    recalcularValorFatura(fatura);
+                }
+                if (cartao != null) {
+                    recalcularLimiteDisponivel(cartao);
                 }
             }
         }

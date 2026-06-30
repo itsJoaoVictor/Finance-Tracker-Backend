@@ -1,10 +1,17 @@
 package com.financetracker.conta.service;
 
+import com.financetracker.cartao.entity.Cartao;
+import com.financetracker.cartao.repository.CartaoRepository;
+import com.financetracker.cartao.service.CartaoService;
 import com.financetracker.conta.dto.*;
 import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.exception.LimitaContasException;
 import com.financetracker.conta.repository.ContaRepository;
+import com.financetracker.transacao.entity.AgendamentoTransacao;
+import com.financetracker.transacao.entity.Transacao;
+import com.financetracker.transacao.repository.AgendamentoTransacaoRepository;
+import com.financetracker.transacao.repository.TransacaoRepository;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import org.springframework.http.HttpStatus;
@@ -15,6 +22,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -22,10 +30,23 @@ public class ContaService {
 
     private final ContaRepository contaRepository;
     private final UsuarioRepository usuarioRepository;
+    private final CartaoService cartaoService;
+    private final CartaoRepository cartaoRepository;
+    private final AgendamentoTransacaoRepository agendamentoRepository;
+    private final TransacaoRepository transacaoRepository;
 
-    public ContaService(ContaRepository contaRepository, UsuarioRepository usuarioRepository) {
+    public ContaService(ContaRepository contaRepository,
+                        UsuarioRepository usuarioRepository,
+                        CartaoService cartaoService,
+                        CartaoRepository cartaoRepository,
+                        AgendamentoTransacaoRepository agendamentoRepository,
+                        TransacaoRepository transacaoRepository) {
         this.contaRepository = contaRepository;
         this.usuarioRepository = usuarioRepository;
+        this.cartaoService = cartaoService;
+        this.cartaoRepository = cartaoRepository;
+        this.agendamentoRepository = agendamentoRepository;
+        this.transacaoRepository = transacaoRepository;
     }
 
     // ─── helpers ───────────────────────────────────────────────
@@ -63,7 +84,7 @@ public class ContaService {
         conta.setUsuario(usuario);
         conta.setNome(request.nome());
         conta.setTipo(request.tipo());
-        conta.setSaldo(request.saldo());
+        conta.setSaldo(Optional.ofNullable(request.saldo()).orElse(BigDecimal.ZERO));
         conta.setCorHexadecimal(request.corHexadecimal());
         conta.setContaPadrao(contaPadrao);
         conta.setAtivo(true);
@@ -118,9 +139,24 @@ public class ContaService {
             throw new LimitaContasException("Não é possível excluir a única conta ativa.");
         }
 
-        // RN-03 — soft delete
-        conta.setAtivo(false);
-        contaRepository.save(conta);
+        // 1. Agendamentos vinculados à conta
+        List<AgendamentoTransacao> agendamentos =
+                agendamentoRepository.findByContaOrigemIdOrContaDestinoId(contaId, contaId);
+        agendamentoRepository.deleteAll(agendamentos);
+
+        // 2. Cartões vinculados → cascata (transações, faturas, assinaturas, ia_classificacoes)
+        List<Cartao> cartoes = cartaoRepository.findByContaId(contaId);
+        for (Cartao c : cartoes) {
+            cartaoService.excluir(c.getId());
+        }
+
+        // 3. Transações restantes (DEPOSITO/SAQUE/PIX com conta_origem/destino)
+        List<Transacao> transacoes =
+                transacaoRepository.findByContaOrigemIdOrContaDestinoId(contaId, contaId);
+        transacaoRepository.deleteAll(transacoes);
+
+        // 4. Conta
+        contaRepository.delete(conta);
     }
 
     @Transactional(readOnly = true)

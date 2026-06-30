@@ -8,6 +8,9 @@ import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.repository.ContaRepository;
 import com.financetracker.transacao.dto.FaturaResponse;
+import com.financetracker.assinatura.entity.Assinatura;
+import com.financetracker.assinatura.repository.AssinaturaRepository;
+import com.financetracker.ia.repository.IaClassificacaoAssinaturaRepository;
 import com.financetracker.transacao.entity.Fatura;
 import com.financetracker.transacao.entity.Transacao;
 import com.financetracker.transacao.enums.StatusFatura;
@@ -36,17 +39,23 @@ public class CartaoService {
     private final UsuarioRepository usuarioRepository;
     private final FaturaRepository faturaRepository;
     private final TransacaoRepository transacaoRepository;
+    private final AssinaturaRepository assinaturaRepository;
+    private final com.financetracker.ia.repository.IaClassificacaoAssinaturaRepository iaClassificacaoAssinaturaRepository;
 
     public CartaoService(CartaoRepository cartaoRepository,
                          ContaRepository contaRepository,
                          UsuarioRepository usuarioRepository,
                          FaturaRepository faturaRepository,
-                         TransacaoRepository transacaoRepository) {
+                         TransacaoRepository transacaoRepository,
+                         AssinaturaRepository assinaturaRepository,
+                         com.financetracker.ia.repository.IaClassificacaoAssinaturaRepository iaClassificacaoAssinaturaRepository) {
         this.cartaoRepository = cartaoRepository;
         this.contaRepository = contaRepository;
         this.usuarioRepository = usuarioRepository;
         this.faturaRepository = faturaRepository;
         this.transacaoRepository = transacaoRepository;
+        this.assinaturaRepository = assinaturaRepository;
+        this.iaClassificacaoAssinaturaRepository = iaClassificacaoAssinaturaRepository;
     }
 
     private Usuario getAuthenticatedUsuario() {
@@ -277,9 +286,28 @@ public class CartaoService {
         Usuario usuario = getAuthenticatedUsuario();
         Cartao cartao = findCartaoDoUsuario(cartaoId, usuario.getId());
 
-        // RN-04 — Soft Delete
-        cartao.setAtivo(false);
-        cartaoRepository.save(cartao);
+        // 1. IaClassificacaoAssinatura → FK assinatura_id NOT NULL
+        List<com.financetracker.assinatura.entity.Assinatura> assinaturas =
+                assinaturaRepository.findByCartaoId(cartaoId);
+        if (!assinaturas.isEmpty()) {
+            List<UUID> assinaturaIds = assinaturas.stream()
+                    .map(com.financetracker.assinatura.entity.Assinatura::getId).toList();
+            iaClassificacaoAssinaturaRepository.deleteByAssinaturaIds(assinaturaIds);
+        }
+
+        // 2. Transações → FK fatura_id + cartao_id
+        List<Transacao> transacoes = transacaoRepository.findByCartaoId(cartaoId);
+        transacaoRepository.deleteAll(transacoes);
+
+        // 3. Faturas → FK cartao_id
+        List<Fatura> faturas = faturaRepository.findByCartaoId(cartaoId);
+        faturaRepository.deleteAll(faturas);
+
+        // 4. Assinaturas → FK cartao_id
+        assinaturaRepository.deleteAll(assinaturas);
+
+        // 5. Cartão
+        cartaoRepository.delete(cartao);
     }
 
     private LocalDate calcularMesReferenciaFatura(Cartao cartao, LocalDate data) {
@@ -291,9 +319,10 @@ public class CartaoService {
         }
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public CartaoResumoResponse resumo() {
         Usuario usuario = getAuthenticatedUsuario();
+        atualizarStatusERolloverFaturas(usuario);
         List<Cartao> cartoes = cartaoRepository.findByUsuarioIdAndAtivoTrue(usuario.getId());
 
         BigDecimal totalLimite = BigDecimal.ZERO;
@@ -426,32 +455,37 @@ public class CartaoService {
             // Se passou do vencimento
             if (hoje.isAfter(f.getDataVencimento())) {
                 if (restante.compareTo(BigDecimal.ZERO) > 0) {
-                    // Marca como ATRASADA e executa o rollover apenas UMA vez (controlado por rolladoOver)
+                    // Apenas crédito rotativo (non-parcela) gera rollover.
+                    // Parcelas já estão alocadas nas faturas corretas pelo criar().
+                    BigDecimal rotativo = transacaoRepository.sumRotativoByFaturaId(f.getId());
+
                     if (!f.isRolladoOver()) {
                         f.setStatus(StatusFatura.ATRASADA);
                         f.setRolladoOver(true);
                         faturaRepository.save(f);
 
-                        // Rollover do saldo para o próximo mês
-                        LocalDate proximoMes = f.getMesReferencia().plusMonths(1);
-                        Fatura proximaFatura = getOrCreateFatura(f.getCartao(), usuario, proximoMes);
+                        // Rollover apenas o saldo rotativo não pago (mínimo entre rotativo e restante pra não exagerar)
+                        BigDecimal valorRollover = rotativo.min(restante);
+                        if (valorRollover.compareTo(BigDecimal.ZERO) > 0) {
+                            LocalDate proximoMes = f.getMesReferencia().plusMonths(1);
+                            Fatura proximaFatura = getOrCreateFatura(f.getCartao(), usuario, proximoMes);
 
-                        Transacao rollover = new Transacao();
-                        rollover.setUsuario(usuario);
-                        rollover.setDescricao("Saldo restante não pago - Fatura " + f.getMesReferencia().getMonthValue() + "/" + f.getMesReferencia().getYear());
-                        rollover.setValor(restante);
-                        rollover.setTipo(TipoTransacao.COMPRA_CREDITO);
-                        rollover.setCartao(f.getCartao());
-                        rollover.setFatura(proximaFatura);
-                        rollover.setData(hoje);
-                        rollover.setAtivo(true);
-                        rollover.setEstornada(false);
-                        transacaoRepository.save(rollover);
+                            Transacao rollover = new Transacao();
+                            rollover.setUsuario(usuario);
+                            rollover.setDescricao("Saldo restante não pago - Fatura " + f.getMesReferencia().getMonthValue() + "/" + f.getMesReferencia().getYear());
+                            rollover.setValor(valorRollover);
+                            rollover.setTipo(TipoTransacao.COMPRA_CREDITO);
+                            rollover.setCartao(f.getCartao());
+                            rollover.setFatura(proximaFatura);
+                            rollover.setData(hoje);
+                            rollover.setAtivo(true);
+                            rollover.setEstornada(false);
+                            transacaoRepository.save(rollover);
 
-                        proximaFatura.setValorTotal(proximaFatura.getValorTotal().add(restante));
-                        faturaRepository.save(proximaFatura);
+                            proximaFatura.setValorTotal(proximaFatura.getValorTotal().add(valorRollover));
+                            faturaRepository.save(proximaFatura);
+                        }
                     } else if (f.getStatus() != StatusFatura.ATRASADA) {
-                        // Já fez rollover mas status pode ter sido alterado manualmente
                         f.setStatus(StatusFatura.ATRASADA);
                         faturaRepository.save(f);
                     }
