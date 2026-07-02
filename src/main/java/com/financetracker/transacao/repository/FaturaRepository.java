@@ -9,6 +9,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.math.BigDecimal;
 
 @Repository
 public interface FaturaRepository extends JpaRepository<Fatura, UUID> {
@@ -30,4 +31,9 @@ public interface FaturaRepository extends JpaRepository<Fatura, UUID> {
     List<Fatura> findByCartaoId(UUID cartaoId);
 
     boolean existsByCartaoIdAndStatus(UUID cartaoId, StatusFatura status);
+
+    @org.springframework.data.jpa.repository.Query("SELECT COALESCE(SUM(f.valorTotal - f.valorPago), 0) FROM Fatura f WHERE f.usuario.id = :usuarioId " +
+           "AND f.mesReferencia = :mesReferencia AND f.cartao.ativo = true AND f.status != 'PAGA'")
+    BigDecimal sumValorTotalByUsuarioAndMesReferencia(@org.springframework.data.repository.query.Param("usuarioId") UUID usuarioId,
+                                                      @org.springframework.data.repository.query.Param("mesReferencia") LocalDate mesReferencia);
 }

@@ -49,6 +49,13 @@ public class TransacaoController {
         return ResponseEntity.ok(transacaoService.estornar(id, request));
     }
 
+    @PostMapping("/{id}/antecipar-parcelas")
+    public ResponseEntity<TransacaoResponse> anteciparParcelas(
+            @PathVariable UUID id,
+            @Valid @RequestBody AnteciparParcelasRequest request) {
+        return ResponseEntity.ok(transacaoService.anteciparParcelas(id, request));
+    }
+
     @GetMapping("/fatura/{faturaId}")
     public ResponseEntity<List<TransacaoResponse>> listarPorFatura(@PathVariable UUID faturaId) {
         return ResponseEntity.ok(transacaoService.buscarPorFatura(faturaId));

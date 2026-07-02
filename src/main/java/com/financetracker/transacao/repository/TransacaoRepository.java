@@ -155,4 +155,24 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
         @Param("cartaoId") UUID cartaoId,
         @Param("inicio") LocalDate inicio,
         @Param("fim") LocalDate fim);
+
+    // ── Queries para Planejador de Compras (IA) ───────────────────────────
+
+    /** Soma receitas (DEPOSITO) ignorando resgates de cofrinho */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.usuario.id = :usuarioId " +
+           "AND t.ativo = true AND t.tipo = 'DEPOSITO' " +
+           "AND t.metaOrigem IS NULL " +
+           "AND t.data BETWEEN :inicio AND :fim")
+    BigDecimal sumReceitasValidasPorPeriodo(@Param("usuarioId") UUID usuarioId,
+                                            @Param("inicio") LocalDate inicio,
+                                            @Param("fim") LocalDate fim);
+
+    /** Soma despesas básicas (SAQUE, PIX) ignorando aportes em cofrinho */
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.usuario.id = :usuarioId " +
+           "AND t.ativo = true AND t.tipo IN ('SAQUE', 'PIX') " +
+           "AND t.metaDestino IS NULL " +
+           "AND t.data BETWEEN :inicio AND :fim")
+    BigDecimal sumDespesasBasicasPorPeriodo(@Param("usuarioId") UUID usuarioId,
+                                            @Param("inicio") LocalDate inicio,
+                                            @Param("fim") LocalDate fim);
 }

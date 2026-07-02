@@ -684,6 +684,71 @@ public class TransacaoService {
         return new TransacaoResponse(transacaoRepository.save(transacao));
     }
 
+    // ── Antecipar Parcelas (POST /api/transacoes/{id}/antecipar-parcelas) ──
+
+    @Transactional
+    public TransacaoResponse anteciparParcelas(UUID transacaoId, AnteciparParcelasRequest request) {
+        Usuario usuario = getAuthenticatedUsuario();
+        Transacao transacaoBase = transacaoRepository.findByIdAndUsuarioIdAndAtivoTrue(transacaoId, usuario.getId())
+                .orElseThrow(TransacaoNaoEncontradaException::new);
+
+        if (transacaoBase.getTipo() != TipoTransacao.COMPRA_CREDITO || transacaoBase.getTotalParcelas() == null || transacaoBase.getTotalParcelas() <= 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Apenas compras no crédito parceladas podem ser antecipadas.");
+        }
+
+        Cartao cartao = transacaoBase.getCartao();
+        if (cartao == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cartão não associado à transação.");
+        }
+
+        // Encontrar a fatura aberta atual
+        Fatura faturaAtual = getOrCreateFaturaAberta(cartao, usuario, LocalDate.now());
+
+        // Buscar todas as parcelas ativas dessa compra
+        List<Transacao> todasParcelas = transacaoRepository.findParcelasAtivas(
+                usuario.getId(), cartao.getId(), transacaoBase.getDescricao(), transacaoBase.getTotalParcelas());
+
+        // Filtrar parcelas que pertencem a faturas com mês de referência POSTERIOR à faturaAtual
+        List<Transacao> parcelasFuturas = todasParcelas.stream()
+                .filter(t -> t.getFatura() != null && t.getFatura().getMesReferencia().isAfter(faturaAtual.getMesReferencia()))
+                .sorted(Comparator.comparing(Transacao::getNumeroParcela))
+                .collect(Collectors.toList());
+
+        int N = request.quantidade();
+        if (N > parcelasFuturas.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Quantidade de parcelas para antecipar excede o limite disponível (" + parcelasFuturas.size() + ").");
+        }
+
+        Set<Fatura> faturasAfetadas = new HashSet<>();
+        faturasAfetadas.add(faturaAtual);
+
+        // Atualizar as faturas das parcelas
+        for (int i = 0; i < parcelasFuturas.size(); i++) {
+            Transacao p = parcelasFuturas.get(i);
+            faturasAfetadas.add(p.getFatura()); // Fatura original
+
+            if (i < N) {
+                // Primeiras N parcelas vão para a fatura atual
+                p.setFatura(faturaAtual);
+            } else {
+                // As restantes são adiantadas em N meses
+                // i.e. a parcela i vai para faturaAtual.mesReferencia + (i - N + 1) meses
+                LocalDate novoMes = faturaAtual.getMesReferencia().plusMonths(i - N + 1);
+                Fatura novaFatura = getOrCreateFatura(cartao, usuario, novoMes);
+                p.setFatura(novaFatura);
+                faturasAfetadas.add(novaFatura);
+            }
+            transacaoRepository.save(p);
+        }
+
+        // Recalcular os totais das faturas afetadas
+        for (Fatura f : faturasAfetadas) {
+            recalcularValorFatura(f);
+        }
+
+        return new TransacaoResponse(transacaoBase);
+    }
+
     // ── Listar (GET /api/transacoes) ────────────────────────────
 
     @Transactional(readOnly = true)
