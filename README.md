@@ -180,7 +180,3 @@ Aqui estão alguns dos principais endpoints disponibilizados pela API:
 
 Este projeto está sob a licença MIT. Consulte o arquivo de licença para mais detalhes.
 
----
-<div align="center">
-  Desenvolvido com ❤️ para transformar a gestão de finanças pessoais.
-</div>
