@@ -455,17 +455,13 @@ public class CartaoService {
             // Se passou do vencimento
             if (hoje.isAfter(f.getDataVencimento())) {
                 if (restante.compareTo(BigDecimal.ZERO) > 0) {
-                    // Apenas crédito rotativo (non-parcela) gera rollover.
-                    // Parcelas já estão alocadas nas faturas corretas pelo criar().
-                    BigDecimal rotativo = transacaoRepository.sumRotativoByFaturaId(f.getId());
-
                     if (!f.isRolladoOver()) {
                         f.setStatus(StatusFatura.ATRASADA);
                         f.setRolladoOver(true);
                         faturaRepository.save(f);
 
-                        // Rollover apenas o saldo rotativo não pago (mínimo entre rotativo e restante pra não exagerar)
-                        BigDecimal valorRollover = rotativo.min(restante);
+                        // Todo o saldo restante não pago gera rollover para a próxima fatura
+                        BigDecimal valorRollover = restante;
                         if (valorRollover.compareTo(BigDecimal.ZERO) > 0) {
                             LocalDate proximoMes = f.getMesReferencia().plusMonths(1);
                             Fatura proximaFatura = getOrCreateFatura(f.getCartao(), usuario, proximoMes);
