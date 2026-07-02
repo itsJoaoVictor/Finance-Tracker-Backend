@@ -5,10 +5,13 @@ import com.financetracker.ia.domain.NivelEssencialidade;
 import com.financetracker.ia.dto.FadigaAssinaturaResponse;
 import com.financetracker.ia.dto.InteligenciaAssinaturaResponse;
 import com.financetracker.ia.dto.ProjecaoCartoesResponse;
+import com.financetracker.ia.dto.SimulacaoCompraRequest;
+import com.financetracker.ia.dto.SimulacaoCompraResponse;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.ia.service.IaService;
 import com.financetracker.ia.service.IaServiceAssinatura;
 import com.financetracker.ia.service.IaServiceCartao;
+import com.financetracker.ia.service.IaServicePlanejadorCompras;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import org.springframework.http.ResponseEntity;
@@ -29,17 +32,20 @@ public class IaController {
     private final IaService iaService;
     private final IaServiceCartao iaServiceCartao;
     private final IaServiceAssinatura iaServiceAssinatura;
+    private final IaServicePlanejadorCompras iaServicePlanejadorCompras;
     private final IaInsightRepository iaInsightRepository;
     private final UsuarioRepository usuarioRepository;
 
     public IaController(IaService iaService,
                         IaServiceCartao iaServiceCartao,
                         IaServiceAssinatura iaServiceAssinatura,
+                        IaServicePlanejadorCompras iaServicePlanejadorCompras,
                         IaInsightRepository iaInsightRepository,
                         UsuarioRepository usuarioRepository) {
         this.iaService = iaService;
         this.iaServiceCartao = iaServiceCartao;
         this.iaServiceAssinatura = iaServiceAssinatura;
+        this.iaServicePlanejadorCompras = iaServicePlanejadorCompras;
         this.iaInsightRepository = iaInsightRepository;
         this.usuarioRepository = usuarioRepository;
     }
@@ -426,6 +432,28 @@ public class IaController {
 
         iaServiceAssinatura.processarEfeitoDominio(usuarioOpt.get());
         return ResponseEntity.ok(Map.of("message", "Efeito Dominó analisado com sucesso!"));
+    }
+
+    // ─── Planejador Inteligente de Compras (Simulador de Desejos) ──────
+
+    /**
+     * Endpoint dedicado para simular o impacto financeiro de uma compra futura.
+     * Chamado na tela de /cartoes no "Simulador de Compras".
+     */
+    @PostMapping("/planejador-compras")
+    public ResponseEntity<?> planejarCompra(@RequestBody SimulacaoCompraRequest request,
+                                            @AuthenticationPrincipal UserDetails userDetails) {
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        if (request.nomeItem() == null || request.valorTotal() == null || (request.parcelas() != null && request.parcelas() <= 0)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Parâmetros inválidos para a simulação."));
+        }
+
+        SimulacaoCompraResponse response = iaServicePlanejadorCompras.simularCompra(usuarioOpt.get(), request);
+        return ResponseEntity.ok(response);
     }
 
 }
