@@ -94,8 +94,29 @@ public class IaServiceCartao {
         List<Map<String, Object>> dadosParaIa = new ArrayList<>();
 
         for (Cartao cartao : cartoes) {
-            // ── Mês de referência da fatura (ex: julho quando diaFechamento=5 e hoje=28/jun) ──
+            // ── Mês de referência da fatura (ex: agosto quando diaFechamento=5 e hoje=6/jul) ──
             LocalDate mesReferenciaFatura = calcularMesReferenciaFatura(cartao, hoje);
+
+            // ── Prioridade: se a fatura do mês atual acabou de fechar (hoje >= diaFechamento)
+            //    e ainda tem saldo pendente, analisar essa fatura fechada — não o próximo ciclo.
+            //    Isso garante que a análise esteja em sincronia com o que CartaoService exibe no card.
+            LocalDate mesAtualInicio = hoje.withDayOfMonth(1);
+            if (!mesAtualInicio.equals(mesReferenciaFatura)) {
+                // mesReferenciaFatura aponta para o próximo ciclo (ex: agosto)
+                // Verificar se o mês atual (ex: julho) tem fatura FECHADA com saldo pendente
+                boolean temFaturaFechadaRecente = faturaRepository
+                        .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuarioId, mesAtualInicio)
+                        .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
+                        .filter(f -> f.getValorTotal().subtract(f.getValorPago()).compareTo(BigDecimal.ZERO) > 0)
+                        .isPresent();
+                if (temFaturaFechadaRecente) {
+                    mesReferenciaFatura = mesAtualInicio;
+                }
+            }
+
+            // Variável final para uso em lambdas
+            final LocalDate mesRefFinal = mesReferenciaFatura;
+
             // ── Início do ciclo de faturamento (último fechamento → dia 5 de junho) ──
             LocalDate dataInicioCiclo = mesReferenciaFatura.minusMonths(1).withDayOfMonth(cartao.getDiaFechamento());
             // se o dia de fechamento não existe no mês (ex: 31 em fev), usa o último dia
@@ -113,7 +134,7 @@ public class IaServiceCartao {
                     .stream()
                     .filter(f -> STATUS_FECHADOS.contains(f.getStatus()))
                     .filter(f -> !f.getMesReferencia().isBefore(seisMesesAtras))
-                    .filter(f -> f.getMesReferencia().isBefore(mesReferenciaFatura))
+                    .filter(f -> f.getMesReferencia().isBefore(mesRefFinal))
                     .collect(Collectors.toList());
 
             BigDecimal mediaTotalHistorica = null;
@@ -483,6 +504,11 @@ public class IaServiceCartao {
 
             long diasParaFechamento = ChronoUnit.DAYS.between(hoje, dataFechamentoAlerta);
 
+            String cartaoIdStr = cartao.getId().toString();
+            Optional<IaInsight> avisoExistenteOpt = avisosExistentes.stream()
+                    .filter(ins -> ins.getMetadados() != null && ins.getMetadados().contains(cartaoIdStr))
+                    .findFirst();
+
             // Threshold: 1-5 dias para fechamento (dia 0 = já fechou, sem sentido alertar)
             if (diasParaFechamento >= 1 && diasParaFechamento <= 5) {
                 String titulo = diasParaFechamento == 1
@@ -499,11 +525,6 @@ public class IaServiceCartao {
 
                 // Upsert: atualiza o aviso existente para este cartão (mantém contagem de dias atualizada)
                 // Isso evita duplicatas E garante que o texto reflita os dias restantes atuais
-                String cartaoIdStr = cartao.getId().toString();
-                Optional<IaInsight> avisoExistenteOpt = avisosExistentes.stream()
-                        .filter(ins -> ins.getMetadados() != null && ins.getMetadados().contains(cartaoIdStr))
-                        .findFirst();
-
                 if (avisoExistenteOpt.isPresent()) {
                     IaInsight existente = avisoExistenteOpt.get();
                     existente.setTitulo(titulo);
@@ -517,6 +538,14 @@ public class IaServiceCartao {
                     } catch (Exception e) {
                         // Race condition: outra requisição já salvou o mesmo insight
                     }
+                }
+            } else {
+                // Fatura já fechou (diasParaFechamento == 0) ou próximo fechamento está longe (> 5 dias):
+                // Marcar aviso existente como lido para limpar o alerta stale da UI
+                if (avisoExistenteOpt.isPresent()) {
+                    IaInsight existente = avisoExistenteOpt.get();
+                    existente.setLido(true);
+                    iaInsightRepository.save(existente);
                 }
             }
         }
