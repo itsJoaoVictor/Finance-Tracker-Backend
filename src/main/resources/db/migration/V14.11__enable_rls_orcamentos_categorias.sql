@@ -1,0 +1,1 @@
+ALTER TABLE orcamentos_categorias ENABLE ROW LEVEL SECURITY;

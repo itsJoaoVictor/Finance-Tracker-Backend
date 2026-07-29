@@ -1,0 +1,1 @@
+ALTER TABLE agendamentos_transacoes ENABLE ROW LEVEL SECURITY;

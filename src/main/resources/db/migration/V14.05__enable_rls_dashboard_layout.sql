@@ -1,0 +1,1 @@
+ALTER TABLE dashboard_layout ENABLE ROW LEVEL SECURITY;

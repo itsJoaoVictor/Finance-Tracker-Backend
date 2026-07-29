@@ -1,0 +1,1 @@
+ALTER TABLE ia_correcoes_usuario ENABLE ROW LEVEL SECURITY;
