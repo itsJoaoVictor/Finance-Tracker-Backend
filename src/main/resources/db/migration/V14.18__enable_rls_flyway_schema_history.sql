@@ -1,0 +1,1 @@
+ALTER TABLE flyway_schema_history ENABLE ROW LEVEL SECURITY;
