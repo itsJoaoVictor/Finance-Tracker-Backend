@@ -49,6 +49,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Flyway -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
         <!-- Dotenv for loading .env -->
         <dependency>
             <groupId>me.paulschwarz</groupId>
