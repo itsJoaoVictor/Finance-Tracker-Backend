@@ -504,11 +504,17 @@ public class IaServiceAssinatura {
 
         // 1. Classificações nunca confirmadas pela IA
         List<IaClassificacaoAssinatura> nuncaConfirmadas = classificacaoRepository
-                .findByUsuarioIdAndConfirmadoFalse(usuarioId);
+                .findByUsuarioIdAndConfirmadoFalse(usuarioId)
+                .stream()
+                .filter(c -> Boolean.TRUE.equals(c.getAssinatura().getAtivo()))
+                .toList();
 
         // 2. Classificações confirmadas — revisão adaptativa por essencialidade
         List<IaClassificacaoAssinatura> todasConfirmadas = classificacaoRepository
-                .findByUsuarioIdAndConfirmadoTrue(usuarioId);
+                .findByUsuarioIdAndConfirmadoTrue(usuarioId)
+                .stream()
+                .filter(c -> Boolean.TRUE.equals(c.getAssinatura().getAtivo()))
+                .toList();
         LocalDateTime agora = LocalDateTime.now();
         List<IaClassificacaoAssinatura> expiradas = todasConfirmadas.stream()
                 .filter(c -> {
