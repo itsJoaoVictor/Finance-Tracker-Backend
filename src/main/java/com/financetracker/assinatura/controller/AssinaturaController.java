@@ -65,4 +65,10 @@ public class AssinaturaController {
         assinaturaService.reativar(id);
         return ResponseEntity.ok().build();
     }
+
+    @PostMapping("/{id}/cancelar")
+    public ResponseEntity<Void> cancelar(@PathVariable UUID id) {
+        assinaturaService.cancelar(id);
+        return ResponseEntity.ok().build();
+    }
 }

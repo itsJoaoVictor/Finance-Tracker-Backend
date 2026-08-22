@@ -54,7 +54,7 @@ public class Assinatura {
     @Column(name = "data_inicio", nullable = false)
     private LocalDate dataInicio;
 
-    @Column(name = "data_proxima_cobranca", nullable = false)
+    @Column(name = "data_proxima_cobranca")
     private LocalDate dataProximaCobranca;
 
     @Column(nullable = false)

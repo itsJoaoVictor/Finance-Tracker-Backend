@@ -241,11 +241,21 @@ public class AssinaturaService {
         if (transacoesAssociadas > 0) {
             // Soft delete — inativa definitivamente
             assinatura.setAtivo(false);
+            assinatura.setDataProximaCobranca(null);
             assinaturaRepository.save(assinatura);
         } else {
             // Exclusão física
             assinaturaRepository.delete(assinatura);
         }
+    }
+
+    @Transactional
+    public void cancelar(UUID id) {
+        Usuario usuario = getAuthenticatedUsuario();
+        Assinatura assinatura = findAssinaturaDoUsuario(id, usuario.getId());
+        assinatura.setAtivo(false);
+        assinatura.setDataProximaCobranca(null);
+        assinaturaRepository.save(assinatura);
     }
 
     @Transactional
