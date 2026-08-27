@@ -21,7 +21,7 @@ jobs:
           cache: maven
 
       - name: Build with Maven
-        run: mvn clean package -DskipTests
+        run: mvn clean package -s settings.xml -DskipTests
 
       - name: Tailscale
         uses: tailscale/github-action@v2
