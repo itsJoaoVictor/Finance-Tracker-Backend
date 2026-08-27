@@ -33,7 +33,6 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p 8022 -H ${{ secrets.PHONE_TAILSCALE_IP }} >> ~/.ssh/known_hosts
 
       - name: Deploy to Smartphone
         env:
@@ -42,8 +41,8 @@ jobs:
           JAR_PATH: target/finance-tracker-backend-1.0.0.jar
           DEST_DIR: ~/finance-tracker
         run: |
-          ssh -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "mkdir -p $DEST_DIR"
-          scp -P 8022 -i ~/.ssh/id_rsa $JAR_PATH $SSH_USER@$PHONE_IP:$DEST_DIR/app.jar
-          ssh -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "pkill -f app.jar || true"
-          ssh -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "cd $DEST_DIR && nohup java -jar app.jar > backend.log 2>&1 &"
+          ssh -o StrictHostKeyChecking=no -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "mkdir -p $DEST_DIR"
+          scp -o StrictHostKeyChecking=no -P 8022 -i ~/.ssh/id_rsa $JAR_PATH $SSH_USER@$PHONE_IP:$DEST_DIR/app.jar
+          ssh -o StrictHostKeyChecking=no -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "pkill -f app.jar || true"
+          ssh -o StrictHostKeyChecking=no -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "cd $DEST_DIR && nohup java -jar app.jar > backend.log 2>&1 &"
 
