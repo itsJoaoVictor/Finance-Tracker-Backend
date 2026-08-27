@@ -43,8 +43,8 @@ jobs:
         run: |
           if [ -z "$SSH_USER" ]; then echo "Erro: Secret SSH_USER esta vazio!"; exit 1; fi
           if [ -z "$PHONE_IP" ]; then echo "Erro: Secret PHONE_TAILSCALE_IP esta vazio!"; exit 1; fi
-          ssh -o StrictHostKeyChecking=no -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "mkdir -p $DEST_DIR"
-          scp -o StrictHostKeyChecking=no -P 8022 -i ~/.ssh/id_rsa $JAR_PATH $SSH_USER@$PHONE_IP:$DEST_DIR/app.jar
-          ssh -o StrictHostKeyChecking=no -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "pkill -f app.jar || true"
-          ssh -o StrictHostKeyChecking=no -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "cd $DEST_DIR && nohup java -jar app.jar > backend.log 2>&1 &"
+          ssh -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "mkdir -p $DEST_DIR"
+          scp -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -P 8022 -i ~/.ssh/id_rsa $JAR_PATH $SSH_USER@$PHONE_IP:$DEST_DIR/app.jar
+          ssh -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "pkill -f app.jar || true"
+          ssh -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "cd $DEST_DIR && nohup java -jar app.jar > backend.log 2>&1 &"
 
