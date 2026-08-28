@@ -1,4 +1,5 @@
 name: Deploy to Termux
+
 on:
   push:
     branches:
@@ -43,10 +44,41 @@ jobs:
           JAR_PATH: target/finance-tracker-backend-1.0.0.jar
           DEST_DIR: ~/finance-tracker
         run: |
-          if [ -z "$SSH_USER" ]; then echo "Erro: Secret SSH_USER esta vazio!"; exit 1; fi
-          if [ -z "$PHONE_IP" ]; then echo "Erro: Secret PHONE_TAILSCALE_IP esta vazio!"; exit 1; fi
-          ssh -v -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "mkdir -p $DEST_DIR"
-          scp -v -O -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -P 8022 -i ~/.ssh/id_rsa $JAR_PATH $SSH_USER@$PHONE_IP:$DEST_DIR/app.jar
-          ssh -v -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "killall java || true"
-          ssh -v -f -o StrictHostKeyChecking=no -o PubkeyAcceptedKeyTypes=+ssh-rsa -p 8022 -i ~/.ssh/id_rsa $SSH_USER@$PHONE_IP "cd $DEST_DIR && nohup java -jar app.jar > backend.log 2>&1 < /dev/null &"
+          if [ -z "$SSH_USER" ]; then
+            echo "Erro: Secret SSH_USER esta vazio!"
+            exit 1
+          fi
 
+          if [ -z "$PHONE_IP" ]; then
+            echo "Erro: Secret PHONE_TAILSCALE_IP esta vazio!"
+            exit 1
+          fi
+
+          echo "Criando diretorio no Termux..."
+          ssh -v \
+            -o StrictHostKeyChecking=no \
+            -o PubkeyAcceptedKeyTypes=+ssh-rsa \
+            -p 8022 \
+            -i ~/.ssh/id_rsa \
+            "$SSH_USER@$PHONE_IP" \
+            "mkdir -p $DEST_DIR"
+
+          echo "Enviando JAR..."
+          scp -v -O \
+            -o StrictHostKeyChecking=no \
+            -o PubkeyAcceptedKeyTypes=+ssh-rsa \
+            -P 8022 \
+            -i ~/.ssh/id_rsa \
+            "$JAR_PATH" \
+            "$SSH_USER@$PHONE_IP:$DEST_DIR/app.jar"
+
+          echo "Reiniciando backend..."
+          ssh -v \
+            -o StrictHostKeyChecking=no \
+            -o PubkeyAcceptedKeyTypes=+ssh-rsa \
+            -p 8022 \
+            -i ~/.ssh/id_rsa \
+            "$SSH_USER@$PHONE_IP" \
+            "cd $DEST_DIR && ./restart.sh"
+
+          echo "Deploy concluido!"
