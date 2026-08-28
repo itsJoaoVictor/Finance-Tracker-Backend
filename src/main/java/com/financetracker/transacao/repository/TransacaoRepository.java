@@ -175,4 +175,13 @@ public interface TransacaoRepository extends JpaRepository<Transacao, UUID> {
     BigDecimal sumDespesasBasicasPorPeriodo(@Param("usuarioId") UUID usuarioId,
                                             @Param("inicio") LocalDate inicio,
                                             @Param("fim") LocalDate fim);
+
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.contaOrigem.id = :contaId AND t.ativo = true AND t.data > :data")
+    BigDecimal sumValorByContaOrigemAndDataAfter(@Param("contaId") UUID contaId, @Param("data") LocalDate data);
+
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.contaDestino.id = :contaId AND t.ativo = true AND t.data > :data")
+    BigDecimal sumValorByContaDestinoAndDataAfter(@Param("contaId") UUID contaId, @Param("data") LocalDate data);
+
+    @Query("SELECT COALESCE(SUM(t.valor), 0) FROM Transacao t WHERE t.cartao.id = :cartaoId AND t.ativo = true AND t.tipo = :tipo AND t.data > :data")
+    BigDecimal sumValorByCartaoAndDataAfterAndTipo(@Param("cartaoId") UUID cartaoId, @Param("tipo") TipoTransacao tipo, @Param("data") LocalDate data);
 }
