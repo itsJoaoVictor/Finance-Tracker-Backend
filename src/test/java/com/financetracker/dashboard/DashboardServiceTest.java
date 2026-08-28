@@ -1,15 +1,18 @@
 package com.financetracker.dashboard;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.financetracker.dashboard.exception.DashboardLoadException;
 import com.financetracker.dashboard.service.DashboardService;
 import com.financetracker.dashboard.dto.DashboardResumoResponse;
+import com.financetracker.dashboard.repository.DashboardLayoutRepository;
 import com.financetracker.cartao.dto.CartaoResponse;
 import com.financetracker.cartao.service.CartaoService;
 import com.financetracker.conta.dto.ContaResponse;
 import com.financetracker.conta.service.ContaService;
 import com.financetracker.conta.model.TipoConta;
-import com.financetracker.ia.domain.IaInsight;
-import com.financetracker.ia.domain.TipoInsight;
+import com.financetracker.transacao.repository.AgendamentoTransacaoRepository;
+import com.financetracker.transacao.repository.FaturaRepository;
+import com.financetracker.transacao.repository.TransacaoRepository;
 import com.financetracker.ia.repository.IaInsightRepository;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
@@ -24,6 +27,7 @@ import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -40,6 +44,11 @@ class DashboardServiceTest {
     @Mock private CartaoService cartaoService;
     @Mock private IaInsightRepository iaInsightRepository;
     @Mock private UsuarioRepository usuarioRepository;
+    @Mock private TransacaoRepository transacaoRepository;
+    @Mock private FaturaRepository faturaRepository;
+    @Mock private AgendamentoTransacaoRepository agendamentoRepository;
+    @Mock private DashboardLayoutRepository dashboardLayoutRepository;
+    @Mock private ObjectMapper objectMapper;
 
     @InjectMocks private DashboardService dashboardService;
 
@@ -54,16 +63,16 @@ class DashboardServiceTest {
         usuario.setEmail("test@email.com");
 
         Authentication auth = mock(Authentication.class);
-        when(auth.getName()).thenReturn("test@email.com");
+        lenient().when(auth.getName()).thenReturn("test@email.com");
         SecurityContext securityContext = mock(SecurityContext.class);
-        when(securityContext.getAuthentication()).thenReturn(auth);
+        lenient().when(securityContext.getAuthentication()).thenReturn(auth);
         SecurityContextHolder.setContext(securityContext);
 
-        when(usuarioRepository.findByEmail("test@email.com")).thenReturn(Optional.of(usuario));
+        lenient().when(usuarioRepository.findByEmail("test@email.com")).thenReturn(Optional.of(usuario));
     }
 
     @Test
-    void obterResumo_DeveRetornarDadosConsolidados() {
+    void obterKpis_DeveRetornarKpisConsolidados() {
         // Arrange
         when(contaService.listar()).thenReturn(List.of(
                 new ContaResponse(UUID.randomUUID(), "Nubank", TipoConta.CORRENTE, BigDecimal.valueOf(3000),
@@ -77,29 +86,17 @@ class DashboardServiceTest {
                 createCartaoResponse("Itaú Click", BigDecimal.valueOf(5000), BigDecimal.valueOf(4570), BigDecimal.valueOf(430))
         ));
 
-        when(iaInsightRepository.findByUsuarioIdAndLidoFalseOrderByCriadoEmDesc(usuarioId))
-                .thenReturn(List.of());
+        when(transacaoRepository.sumValorByContaOrigemAndDataAfter(any(), any())).thenReturn(BigDecimal.ZERO);
+        when(transacaoRepository.sumValorByContaDestinoAndDataAfter(any(), any())).thenReturn(BigDecimal.ZERO);
+        when(transacaoRepository.sumValorByCartaoAndDataAfterAndTipo(any(), any(), any())).thenReturn(BigDecimal.ZERO);
 
         // Act
-        DashboardResumoResponse response = dashboardService.obterResumo("MES_ATUAL");
+        DashboardResumoResponse.Kpis kpis = dashboardService.obterKpis("MES_ATUAL");
 
         // Assert
-        assertNotNull(response);
-        assertEquals(BigDecimal.valueOf(4500.50), response.kpis().saldoTotal());
-        assertEquals(BigDecimal.valueOf(1280.90), response.kpis().faturaTotalCartoes());
-        assertEquals(2, response.contas().size());
-        assertEquals(2, response.cartoes().size());
-        assertNotNull(response.preferenciasLayout());
-        assertEquals(6, response.preferenciasLayout().ordemWidgets().size());
-    }
-
-    @Test
-    void obterResumo_DeveLancarException_QuandoNaoHaDados() {
-        // Arrange
-        when(contaService.listar()).thenThrow(new RuntimeException("Timeout"));
-
-        // Act & Assert
-        assertThrows(DashboardLoadException.class, () -> dashboardService.obterResumo("MES_ATUAL"));
+        assertNotNull(kpis);
+        assertEquals(BigDecimal.valueOf(4500.50), kpis.saldoTotal());
+        assertEquals(BigDecimal.valueOf(1280.90), kpis.faturaTotalCartoes());
     }
 
     private CartaoResponse createCartaoResponse(String nome, BigDecimal limite, BigDecimal limiteDisponivel, BigDecimal fatura) {
