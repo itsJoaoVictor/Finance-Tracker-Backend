@@ -55,7 +55,7 @@ jobs:
           fi
 
           echo "Criando diretorio no Termux..."
-          ssh -v \
+          ssh \
             -o StrictHostKeyChecking=no \
             -o PubkeyAcceptedKeyTypes=+ssh-rsa \
             -p 8022 \
@@ -64,7 +64,7 @@ jobs:
             "mkdir -p $DEST_DIR"
 
           echo "Enviando JAR..."
-          scp -v -O \
+          scp -O \
             -o StrictHostKeyChecking=no \
             -o PubkeyAcceptedKeyTypes=+ssh-rsa \
             -P 8022 \
@@ -73,7 +73,7 @@ jobs:
             "$SSH_USER@$PHONE_IP:$DEST_DIR/app.jar"
 
           echo "Reiniciando backend..."
-          ssh -v \
+          ssh \
             -o StrictHostKeyChecking=no \
             -o PubkeyAcceptedKeyTypes=+ssh-rsa \
             -p 8022 \

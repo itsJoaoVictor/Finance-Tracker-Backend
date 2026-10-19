@@ -182,8 +182,10 @@ public class IaServiceCartao {
 
             // ── 7. Montar DTO conforme o status ──
             if (faturaFechada && faturaAtualOpt.isPresent()) {
-                // ── FATURA FECHADA: usar valor real ──
-                BigDecimal valorReal = faturaAtualOpt.get().getValorTotal();
+                // ── FATURA FECHADA: usar valor restante real ──
+                BigDecimal valorReal = faturaAtualOpt.get().getValorTotal()
+                        .subtract(faturaAtualOpt.get().getValorPago());
+                if (valorReal.compareTo(BigDecimal.ZERO) < 0) valorReal = BigDecimal.ZERO;
                 BigDecimal desvioPercentual = null;
                 String classificacao;
                 String mensagem;
@@ -234,8 +236,9 @@ public class IaServiceCartao {
                 String statusFatura = faturaAtualOpt.isPresent() ? "ABERTA" : "SEM_FATURA";
 
                 if (faturaAtualOpt.isPresent()) {
-                    // Fatura ABERTA → base é o valorTotal real (inclui tudo: variáveis, parcelas, assinaturas)
-                    BigDecimal valorAtualFatura = faturaAtualOpt.get().getValorTotal();
+                    // Fatura ABERTA → base é o saldo devedor real da fatura (valorTotal - valorPago)
+                    BigDecimal valorAtualFatura = faturaAtualOpt.get().getValorTotal()
+                            .subtract(faturaAtualOpt.get().getValorPago());
                     if (valorAtualFatura.compareTo(BigDecimal.ZERO) < 0) valorAtualFatura = BigDecimal.ZERO;
 
                     long diasNoMes = hoje.lengthOfMonth();

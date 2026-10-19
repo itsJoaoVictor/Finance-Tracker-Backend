@@ -132,7 +132,7 @@ public class CartaoService {
                     if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
                     if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
                             && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
-                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal());
+                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
                         temFechadaOuAtrasada = true;
                         if (faturaRef == null) {
                             faturaRef = f.getMesReferencia();
@@ -151,7 +151,7 @@ public class CartaoService {
                         .orElse(null);
 
                 if (fAtual != null) {
-                    BigDecimal restante = fAtual.getValorTotal();
+                    BigDecimal restante = fAtual.getValorTotal().subtract(fAtual.getValorPago());
                     faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                     status = "ABERTA";
                     faturaRef = fAtual.getMesReferencia();
@@ -159,7 +159,7 @@ public class CartaoService {
                     // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
                     for (Fatura f : faturas) {
                         if (f.getMesReferencia().equals(mesReferenciaAtual)) {
-                            BigDecimal restante = f.getValorTotal();
+                            BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
                             faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                             faturaRef = f.getMesReferencia();
                             break;
@@ -202,7 +202,7 @@ public class CartaoService {
                 if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
                 if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
                         && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
-                    fechadasPendentes = fechadasPendentes.add(f.getValorTotal());
+                    fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
                     temFechadaOuAtrasada = true;
                     if (faturaRef == null) {
                         faturaRef = f.getMesReferencia();
@@ -221,17 +221,16 @@ public class CartaoService {
                         .orElse(null);
 
                 if (fAtual != null) {
-                    faturaCartao = fAtual.getValorTotal();
+                    BigDecimal restante = fAtual.getValorTotal().subtract(fAtual.getValorPago());
+                    faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                     status = "ABERTA";
                     faturaRef = fAtual.getMesReferencia();
                 } else {
                     // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
                     for (Fatura f : faturas) {
                         if (f.getMesReferencia().equals(mesReferenciaAtual)) {
-                            faturaCartao = f.getValorTotal();
-                            if (faturaCartao.compareTo(BigDecimal.ZERO) < 0) {
-                                faturaCartao = BigDecimal.ZERO;
-                            }
+                            BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
+                            faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                             faturaRef = f.getMesReferencia();
                             break;
                         }
@@ -350,7 +349,7 @@ public class CartaoService {
                     if (f.getStatus() == StatusFatura.ATRASADA && f.isRolladoOver()) continue;
                     if ((f.getStatus() == StatusFatura.FECHADA || f.getStatus() == StatusFatura.ATRASADA || f.getStatus() == StatusFatura.PAGA_PARCIAL)
                             && f.getValorTotal().compareTo(f.getValorPago()) > 0) {
-                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal());
+                        fechadasPendentes = fechadasPendentes.add(f.getValorTotal().subtract(f.getValorPago()));
                         temFechadaOuAtrasada = true;
                     }
                 }
@@ -365,15 +364,14 @@ public class CartaoService {
                             .orElse(null);
 
                     if (fAtual != null) {
-                        faturaCartao = fAtual.getValorTotal();
+                        BigDecimal restante = fAtual.getValorTotal().subtract(fAtual.getValorPago());
+                        faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                     } else {
                         // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
                         for (Fatura f : faturas) {
                             if (f.getMesReferencia().equals(mesReferenciaAtual)) {
-                                faturaCartao = f.getValorTotal();
-                                if (faturaCartao.compareTo(BigDecimal.ZERO) < 0) {
-                                    faturaCartao = BigDecimal.ZERO;
-                                }
+                                BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
+                                faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                                 break;
                             }
                         }
