@@ -1,6 +1,7 @@
 package com.financetracker.ia.dto;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 public record FolgaLimiteItem(
@@ -12,5 +13,8 @@ public record FolgaLimiteItem(
         Integer totalParcelas,
         BigDecimal impactoMensal,
         String titulo,
-        String mensagem
+        String mensagem,
+        String tipo,
+        Integer quantidadeCompras,
+        List<FolgaLimiteDetalhe> detalhes
 ) {}

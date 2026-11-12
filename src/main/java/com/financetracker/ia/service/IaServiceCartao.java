@@ -861,13 +861,8 @@ public class IaServiceCartao {
 
     /**
      * Endpoint dedicado: identifica parcelamentos que terminam no mês atual
-     * (ex: parcela 10/10) e informa o usuário que aquele valor ficará "livre"
-     * no orçamento a partir do próximo mês.
-     *
-     * Insight example:
-     *   "Boa notícia! O parcelamento da sua TV (R$ 200/mês) termina nesta
-     *    fatura. A partir do mês que vem, você terá esse valor 'livre' no
-     *    seu orçamento novamente."
+     * (ex: parcela 10/10) e agrupa compras à vista (1x, excluindo assinaturas)
+     * da fatura aberta que não geram parcelas nos próximos ciclos.
      *
      * Chamado ao entrar na tela /cartoes.
      */
@@ -887,64 +882,133 @@ public class IaServiceCartao {
             if (faturaAtualOpt.isEmpty()) continue;
             Fatura faturaAtual = faturaAtualOpt.get();
 
-            List<Transacao> transacoesFatura = transacaoRepository
-                    .findByFaturaIdAndAtivoTrue(faturaAtual.getId());
-
-            List<Transacao> parcelasFatura = transacoesFatura.stream()
+            List<Transacao> comprasCreditoValidas = transacaoRepository
+                    .findByFaturaIdAndAtivoTrue(faturaAtual.getId())
+                    .stream()
                     .filter(t -> t.getTipo() == TipoTransacao.COMPRA_CREDITO)
-                    .filter(t -> t.getNumeroParcela() != null && t.getTotalParcelas() != null)
-                    .filter(t -> t.getTotalParcelas() > 1)
+                    .filter(t -> !Boolean.TRUE.equals(t.getEstornada()))
                     .collect(Collectors.toList());
 
-            if (parcelasFatura.isEmpty()) continue;
+            if (comprasCreditoValidas.isEmpty()) continue;
 
-            Map<String, List<Transacao>> porDescricao = parcelasFatura.stream()
-                    .collect(Collectors.groupingBy(Transacao::getDescricao));
-
-            for (Map.Entry<String, List<Transacao>> entry : porDescricao.entrySet()) {
-                String descricao = entry.getKey();
-                List<Transacao> parcelas = entry.getValue();
-
-                boolean temUltimaParcela = parcelas.stream()
-                        .anyMatch(t -> t.getNumeroParcela().equals(t.getTotalParcelas()));
-                if (!temUltimaParcela) continue;
-
-                Transacao ultimaParcela = parcelas.stream()
-                        .max(Comparator.comparingInt(Transacao::getNumeroParcela))
-                        .orElse(null);
-                if (ultimaParcela == null) continue;
-
-                int totalParcelas = ultimaParcela.getTotalParcelas();
-                BigDecimal valorParcela = ultimaParcela.getValor();
-                BigDecimal impactoMensal = parcelas.stream()
-                        .map(Transacao::getValor)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-                String titulo = "Folga de Limite: Parcelamento Finalizado";
-                String mensagem = String.format(
-                        "Boa notícia! O parcelamento de \"%s\" (R$ %.2f/mês, %d parcelas) " +
-                        "termina nesta fatura do %s. A partir do mês que vem, você terá esse " +
-                        "valor livre no seu orçamento. Considere direcionar essa verba para " +
-                        "economizar ou investir.",
-                        descricao, valorParcela, totalParcelas, cartao.getNome());
-
-                String id = cartao.getId().toString() + "-" + descricao.hashCode();
-
-                items.add(new com.financetracker.ia.dto.FolgaLimiteItem(
-                        id,
-                        cartao.getId(),
-                        cartao.getNome(),
-                        descricao,
-                        valorParcela,
-                        totalParcelas,
-                        impactoMensal,
-                        titulo,
-                        mensagem
-                ));
-            }
+            adicionarParcelamentosFinalizados(cartao, comprasCreditoValidas, items);
+            adicionarComprasAVistaAgrupadas(cartao, comprasCreditoValidas, items);
         }
 
         return new com.financetracker.ia.dto.FolgaLimiteResponse(items);
+    }
+
+    private void adicionarParcelamentosFinalizados(
+            Cartao cartao,
+            List<Transacao> comprasCreditoValidas,
+            List<com.financetracker.ia.dto.FolgaLimiteItem> items) {
+        List<Transacao> parcelasFatura = comprasCreditoValidas.stream()
+                .filter(t -> t.getNumeroParcela() != null && t.getTotalParcelas() != null)
+                .filter(t -> t.getTotalParcelas() > 1)
+                .collect(Collectors.toList());
+
+        if (parcelasFatura.isEmpty()) return;
+
+        Map<String, List<Transacao>> porDescricao = parcelasFatura.stream()
+                .collect(Collectors.groupingBy(Transacao::getDescricao));
+
+        for (Map.Entry<String, List<Transacao>> entry : porDescricao.entrySet()) {
+            String descricao = entry.getKey();
+            List<Transacao> parcelas = entry.getValue();
+
+            boolean temUltimaParcela = parcelas.stream()
+                    .anyMatch(t -> t.getNumeroParcela().equals(t.getTotalParcelas()));
+            if (!temUltimaParcela) continue;
+
+            Transacao ultimaParcela = parcelas.stream()
+                    .max(Comparator.comparingInt(Transacao::getNumeroParcela))
+                    .orElse(null);
+            if (ultimaParcela == null) continue;
+
+            int totalParcelas = ultimaParcela.getTotalParcelas();
+            BigDecimal valorParcela = ultimaParcela.getValor();
+            BigDecimal impactoMensal = parcelas.stream()
+                    .map(Transacao::getValor)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            String titulo = "Folga de Limite: Parcelamento Finalizado";
+            String mensagem = String.format(
+                    "Boa notícia! O parcelamento de \"%s\" (R$ %.2f/mês, %d parcelas) " +
+                    "termina nesta fatura do %s. A partir do mês que vem, você terá esse " +
+                    "valor livre no seu orçamento. Considere direcionar essa verba para " +
+                    "economizar ou investir.",
+                    descricao, valorParcela, totalParcelas, cartao.getNome());
+
+            String id = cartao.getId().toString() + "-" + descricao.hashCode();
+
+            items.add(new com.financetracker.ia.dto.FolgaLimiteItem(
+                    id,
+                    cartao.getId(),
+                    cartao.getNome(),
+                    descricao,
+                    valorParcela,
+                    totalParcelas,
+                    impactoMensal,
+                    titulo,
+                    mensagem,
+                    "PARCELAMENTO",
+                    1,
+                    List.of()
+            ));
+        }
+    }
+
+    private void adicionarComprasAVistaAgrupadas(
+            Cartao cartao,
+            List<Transacao> comprasCreditoValidas,
+            List<com.financetracker.ia.dto.FolgaLimiteItem> items) {
+        // Exclui assinaturas ("Assinatura: %") pois, embora sejam parcela única, repetem no próximo ciclo
+        List<Transacao> comprasAVista = comprasCreditoValidas.stream()
+                .filter(t -> t.getTotalParcelas() == null || t.getTotalParcelas() <= 1)
+                .filter(t -> t.getDescricao() == null
+                        || !t.getDescricao().trim().toLowerCase().startsWith("assinatura:"))
+                .sorted(Comparator.comparing(Transacao::getValor, Comparator.nullsLast(Comparator.reverseOrder())))
+                .collect(Collectors.toList());
+
+        if (comprasAVista.isEmpty()) return;
+
+        BigDecimal totalAVista = comprasAVista.stream()
+                .map(Transacao::getValor)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        if (totalAVista.compareTo(BigDecimal.ZERO) <= 0) return;
+
+        List<com.financetracker.ia.dto.FolgaLimiteDetalhe> detalhes = comprasAVista.stream()
+                .map(t -> new com.financetracker.ia.dto.FolgaLimiteDetalhe(
+                        t.getDescricao() != null ? t.getDescricao() : "Compra à vista",
+                        t.getValor() != null ? t.getValor() : BigDecimal.ZERO
+                ))
+                .collect(Collectors.toList());
+
+        int quantidade = comprasAVista.size();
+        String titulo = "Compras à Vista desta Fatura";
+        String mensagem = String.format(
+                "Você realizou %d %s à vista (1x) no %s totalizando R$ %.2f. " +
+                "Esses lançamentos não geram parcelas automáticas na próxima fatura.",
+                quantidade, quantidade == 1 ? "compra" : "compras", cartao.getNome(), totalAVista);
+
+        String id = cartao.getId().toString() + "-a-vista";
+
+        items.add(new com.financetracker.ia.dto.FolgaLimiteItem(
+                id,
+                cartao.getId(),
+                cartao.getNome(),
+                "Compras à vista (1x)",
+                totalAVista,
+                1,
+                totalAVista,
+                titulo,
+                mensagem,
+                "A_VISTA_AGRUPADO",
+                quantidade,
+                detalhes
+        ));
     }
 
     // ═══════════════════════════════════════════════════════════════════
