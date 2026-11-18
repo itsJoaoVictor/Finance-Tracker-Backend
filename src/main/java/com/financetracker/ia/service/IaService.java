@@ -53,7 +53,7 @@ public class IaService {
     @Value("${OPENAI_API_KEY:}")
     private String openAiApiKey;
 
-    @Value("${OPENAI_MODEL:deepseek/deepseek-v4-flash}")
+    @Value("${OPENAI_MODEL:deepseek/deepseek-v4.1-flash-1017}")
     private String openAiModel;
 
     // Expressões regulares para anonimização de PII (LGPD - RN-13)
@@ -238,6 +238,169 @@ public class IaService {
         // 2. Gravar o log do loop de aprendizado
         IaCorrecaoUsuario correcao = new IaCorrecaoUsuario(usuario, descricaoLimpa, categoriaAntigaId, categoriaNovaId);
         iaCorrecaoUsuarioRepository.save(correcao);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTRAÇÃO DE COMPROVANTE / NOTA POR IMAGEM (VISION IA)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Analisa uma imagem de comprovante/cupom/print de compra via modelo Vision (deepseek/deepseek-v4.1-flash-1017)
+     * e retorna os dados estruturados para pré-preencher o formulário de Nova Transação.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> extrairDadosComprovante(String imagemBase64, UUID usuarioId) {
+        if (imagemBase64 == null || imagemBase64.trim().isEmpty()) {
+            throw new IllegalArgumentException("A imagem do comprovante é obrigatória.");
+        }
+        if (openAiApiKey == null || openAiApiKey.trim().isEmpty()) {
+            throw new IllegalStateException("Chave de API da IA não configurada no servidor.");
+        }
+
+        String dataUri = imagemBase64.trim();
+        if (!dataUri.startsWith("data:image/")) {
+            dataUri = "data:image/jpeg;base64," + dataUri;
+        }
+
+        // Recupera correções anteriores do usuário para Few-Shot (RN-14)
+        List<IaCorrecaoUsuario> correcoes = iaCorrecaoUsuarioRepository.findByUsuarioId(usuarioId);
+        StringBuilder contextBuilder = new StringBuilder();
+        if (!correcoes.isEmpty()) {
+            contextBuilder.append("Regras personalizadas deste usuário:\n");
+            for (IaCorrecaoUsuario c : correcoes) {
+                Optional<Categoria> catNova = categoriaRepository.findById(c.getCategoriaNovaId());
+                catNova.ifPresent(categoria -> contextBuilder.append("- Estabelecimentos contendo '")
+                        .append(c.getDescricaoLimpa())
+                        .append("' pertencem à categoria: '")
+                        .append(categoria.getNome())
+                        .append("'\n"));
+            }
+        }
+
+        List<Categoria> categoriasDisponiveis = categoriaRepository.findAllByUsuarioId(usuarioId);
+        String listaCategorias = categoriasDisponiveis.stream()
+                .map(Categoria::getNome)
+                .collect(Collectors.joining(", "));
+
+        LocalDate hoje = LocalDate.now();
+        String promptSistema = "Você é um assistente especialista em leitura de comprovantes de cartão de crédito, cupons fiscais (NFC-e / SAT), recibos de maquininhas e prints de notificações bancárias brasileiras.\n" +
+                "Data atual de referência: " + hoje + ".\n" +
+                "Analise a imagem enviada e extraia os dados da compra retornando UNICAMENTE um objeto JSON válido no formato:\n" +
+                "{\n" +
+                "  \"descricao\": \"Nome limpo e legível do estabelecimento ou produto principal (ex: Outback Steakhouse, Supermercado Extra, Uber)\",\n" +
+                "  \"valor\": 150.00,\n" +
+                "  \"data\": \"YYYY-MM-DD\",\n" +
+                "  \"totalParcelas\": 1,\n" +
+                "  \"categoriaSugerida\": \"NOME_DA_CATEGORIA\",\n" +
+                "  \"confianca\": 0.95,\n" +
+                "  \"justificativa\": \"Breve resumo do que foi identificado no comprovante\"\n" +
+                "}\n" +
+                "Regras obrigatórias de extração:\n" +
+                "1. VALOR E PARCELAS: Se o comprovante indicar compra parcelada (ex: '3x de R$ 50,00', 'Parcelado em 10x', 'Valor Total R$ 150,00'), o campo \"valor\" DEVE ser sempre o VALOR TOTAL DA COMPRA (ex: 150.00) e \"totalParcelas\" deve ser a quantidade de parcelas (ex: 3). Se for à vista ou crédito 1x, use \"totalParcelas\": 1.\n" +
+                "2. DATA: Extraia a data da transação no formato ISO 'YYYY-MM-DD'. Se o ano não estiver explícito na imagem, assuma o ano de " + hoje.getYear() + ". Se não houver nenhuma data legível na imagem, retorne \"" + hoje + "\".\n" +
+                "3. CATEGORIA: As categorias cadastradas pelo usuário são: [" + listaCategorias + "]. Escolha preferencialmente uma categoria existente dessa lista que melhor se encaixe. Se nenhuma servir, sugira um nome curto e adequado em \"categoriaSugerida\".\n" +
+                "4. LGPD: Não inclua CPF, número de cartão nem dados pessoais na descrição ou justificativa.\n" +
+                "5. Retorne APENAS o JSON puro, sem blocos markdown (sem ```json).\n" +
+                contextBuilder.toString();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Bearer " + openAiApiKey);
+
+        Map<String, Object> messageSystem = new HashMap<>();
+        messageSystem.put("role", "system");
+        messageSystem.put("content", promptSistema);
+
+        Map<String, Object> textPart = new HashMap<>();
+        textPart.put("type", "text");
+        textPart.put("text", "Extraia os dados desta compra no cartão (descrição, valor total, data, número de parcelas e categoria) em formato JSON.");
+
+        Map<String, Object> imageUrlObj = new HashMap<>();
+        imageUrlObj.put("url", dataUri);
+
+        Map<String, Object> imagePart = new HashMap<>();
+        imagePart.put("type", "image_url");
+        imagePart.put("image_url", imageUrlObj);
+
+        Map<String, Object> messageUser = new HashMap<>();
+        messageUser.put("role", "user");
+        messageUser.put("content", Arrays.asList(textPart, imagePart));
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", openAiModel);
+        requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
+        requestBody.put("temperature", 0.1);
+        requestBody.put("max_tokens", 500);
+
+        try {
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    openAiBaseUrl + "/chat/completions", entity, String.class);
+
+            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+                Map<?, ?> responseMap = objectMapper.readValue(response.getBody(), Map.class);
+                List<?> choices = (List<?>) responseMap.get("choices");
+                if (choices != null && !choices.isEmpty()) {
+                    Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+                    Map<?, ?> message = (Map<?, ?>) choice.get("message");
+                    String content = ((String) message.get("content")).trim();
+                    content = content.replaceAll("```json", "").replaceAll("```", "").trim();
+
+                    // Caso o modelo inclua algum texto antes/depois do JSON, extrai apenas o bloco { ... }
+                    int firstBrace = content.indexOf('{');
+                    int lastBrace = content.lastIndexOf('}');
+                    if (firstBrace >= 0 && lastBrace > firstBrace) {
+                        content = content.substring(firstBrace, lastBrace + 1);
+                    }
+
+                    Map<String, Object> parsed = objectMapper.readValue(content, Map.class);
+
+                    String descricaoExtraida = parsed.get("descricao") != null
+                            ? parsed.get("descricao").toString().trim()
+                            : "";
+                    String descricaoLimpa = higienizarDescricao(descricaoExtraida);
+
+                    // Verificar se a descrição já está no dicionário de cache do usuário
+                    if (!descricaoLimpa.isEmpty()) {
+                        Optional<IaDicionarioCategoria> cacheOpt = iaDicionarioCategoriaRepository.findById(descricaoLimpa);
+                        if (cacheOpt.isPresent()) {
+                            Categoria catCache = cacheOpt.get().getCategoria();
+                            parsed.put("categoriaSugerida", catCache.getNome());
+                            parsed.put("categoriaId", catCache.getId());
+                            return parsed;
+                        }
+                    }
+
+                    // Vincular categoriaSugerida ao ID real da categoria do usuário (se existir)
+                    String categoriaSugerida = parsed.get("categoriaSugerida") != null
+                            ? parsed.get("categoriaSugerida").toString().trim()
+                            : "";
+
+                    if (!categoriaSugerida.isEmpty()) {
+                        Optional<Categoria> categoriaEncontrada = categoriasDisponiveis.stream()
+                                .filter(c -> c.getNome().equalsIgnoreCase(categoriaSugerida))
+                                .findFirst();
+
+                        if (categoriaEncontrada.isPresent()) {
+                            parsed.put("categoriaId", categoriaEncontrada.get().getId());
+                            parsed.put("categoriaSugerida", categoriaEncontrada.get().getNome());
+                            if (!descricaoLimpa.isEmpty()) {
+                                try {
+                                    iaDicionarioCategoriaRepository.save(
+                                            new IaDicionarioCategoria(descricaoLimpa, categoriaEncontrada.get())
+                                    );
+                                } catch (Exception ignored) {}
+                            }
+                        }
+                    }
+
+                    return parsed;
+                }
+            }
+            throw new RuntimeException("A IA não retornou dados válidos para a imagem enviada.");
+        } catch (Exception e) {
+            throw new RuntimeException("Não foi possível extrair os dados da imagem: " + e.getMessage(), e);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

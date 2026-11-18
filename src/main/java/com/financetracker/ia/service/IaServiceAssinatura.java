@@ -58,7 +58,7 @@ public class IaServiceAssinatura {
     @Value("${OPENAI_API_KEY:}")
     private String openAiApiKey;
 
-    @Value("${OPENAI_MODEL:deepseek/deepseek-v4-flash}")
+    @Value("${OPENAI_MODEL:deepseek/deepseek-v4.1-flash-1017}")
     private String openAiModel;
 
     // ── Categorias cuja duplicação é preocupante ─────────────────────────

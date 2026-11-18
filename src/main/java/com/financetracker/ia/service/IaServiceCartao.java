@@ -52,7 +52,7 @@ public class IaServiceCartao {
     @Value("${OPENAI_API_KEY:}")
     private String openAiApiKey;
 
-    @Value("${OPENAI_MODEL:deepseek/deepseek-v4-flash}")
+    @Value("${OPENAI_MODEL:deepseek/deepseek-v4.1-flash-1017}")
     private String openAiModel;
 
     private static final Set<StatusFatura> STATUS_FECHADOS = Set.of(
