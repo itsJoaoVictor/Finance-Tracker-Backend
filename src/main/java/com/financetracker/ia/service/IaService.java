@@ -282,25 +282,40 @@ public class IaService {
                 .map(Categoria::getNome)
                 .collect(Collectors.joining(", "));
 
+        List<Conta> contasDisponiveis = contaRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+        String listaContas = contasDisponiveis.stream()
+                .map(Conta::getNome)
+                .collect(Collectors.joining(", "));
+
         LocalDate hoje = LocalDate.now();
-        String promptSistema = "Você é um assistente especialista em leitura de comprovantes de cartão de crédito, cupons fiscais (NFC-e / SAT), recibos de maquininhas e prints de notificações bancárias brasileiras.\n" +
+        String promptSistema = "Você é um assistente especialista em leitura de comprovantes financeiros brasileiros: Cartão de Crédito, Cupons Fiscais (NFC-e / SAT), Comprovantes de Pix, Transferências (TED/DOC/entre contas), Saques e Depósitos.\n" +
                 "Data atual de referência: " + hoje + ".\n" +
-                "Analise a imagem enviada e extraia os dados da compra retornando UNICAMENTE um objeto JSON válido no formato:\n" +
+                "Analise a imagem enviada e extraia os dados retornando UNICAMENTE um objeto JSON válido no formato:\n" +
                 "{\n" +
-                "  \"descricao\": \"Nome limpo e legível do estabelecimento ou produto principal (ex: Outback Steakhouse, Supermercado Extra, Uber)\",\n" +
+                "  \"tipoSugerido\": \"COMPRA_CREDITO | PIX | TRANSFERENCIA | DEPOSITO | SAQUE\",\n" +
+                "  \"descricao\": \"Descrição curta e clara (ex: Outback Steakhouse, Pix para João Silva, Transferência Aluguel, Saque Banco24Horas)\",\n" +
                 "  \"valor\": 150.00,\n" +
                 "  \"data\": \"YYYY-MM-DD\",\n" +
                 "  \"totalParcelas\": 1,\n" +
                 "  \"categoriaSugerida\": \"NOME_DA_CATEGORIA\",\n" +
+                "  \"contaOrigemSugerida\": \"NOME_DA_CONTA_ORIGEM_OU_VAZIO\",\n" +
+                "  \"contaDestinoSugerida\": \"NOME_DA_CONTA_DESTINO_OU_VAZIO\",\n" +
                 "  \"confianca\": 0.95,\n" +
                 "  \"justificativa\": \"Breve resumo do que foi identificado no comprovante\"\n" +
                 "}\n" +
                 "Regras obrigatórias de extração:\n" +
-                "1. VALOR E PARCELAS: Se o comprovante indicar compra parcelada (ex: '3x de R$ 50,00', 'Parcelado em 10x', 'Valor Total R$ 150,00'), o campo \"valor\" DEVE ser sempre o VALOR TOTAL DA COMPRA (ex: 150.00) e \"totalParcelas\" deve ser a quantidade de parcelas (ex: 3). Se for à vista ou crédito 1x, use \"totalParcelas\": 1.\n" +
-                "2. DATA: Extraia a data da transação no formato ISO 'YYYY-MM-DD'. Se o ano não estiver explícito na imagem, assuma o ano de " + hoje.getYear() + ". Se não houver nenhuma data legível na imagem, retorne \"" + hoje + "\".\n" +
-                "3. CATEGORIA: As categorias cadastradas pelo usuário são: [" + listaCategorias + "]. Escolha preferencialmente uma categoria existente dessa lista que melhor se encaixe. Se nenhuma servir, sugira um nome curto e adequado em \"categoriaSugerida\".\n" +
-                "4. LGPD: Não inclua CPF, número de cartão nem dados pessoais na descrição ou justificativa.\n" +
-                "5. Retorne APENAS o JSON puro, sem blocos markdown (sem ```json).\n" +
+                "1. TIPO SUGERIDO (\"tipoSugerido\"): Identifique a modalidade pelo comprovante:\n" +
+                "   - \"PIX\": Comprovante de Pix enviado/pago ou QR Code Pix.\n" +
+                "   - \"TRANSFERENCIA\": Comprovante de TED, DOC ou transferência entre contas.\n" +
+                "   - \"DEPOSITO\": Comprovante de depósito bancário ou Pix/valor recebido a favor do usuário.\n" +
+                "   - \"SAQUE\": Recibo de saque em caixa eletrônico / Banco24Horas.\n" +
+                "   - \"COMPRA_CREDITO\": Comprovante de cartão de crédito, maquininha, compra online ou cupom fiscal de compra.\n" +
+                "2. VALOR E PARCELAS: Se o comprovante indicar compra parcelada (ex: '3x de R$ 50,00', 'Parcelado em 10x', 'Valor Total R$ 150,00'), o campo \"valor\" DEVE ser sempre o VALOR TOTAL DA COMPRA (ex: 150.00) e \"totalParcelas\" deve ser a quantidade de parcelas (ex: 3). Para à vista, Pix, Saque, Depósito ou Transferência, use \"totalParcelas\": 1.\n" +
+                "3. DATA: Extraia a data da transação no formato ISO 'YYYY-MM-DD'. Se o ano não estiver explícito na imagem, assuma o ano de " + hoje.getYear() + ". Se não houver nenhuma data legível na imagem, retorne \"" + hoje + "\".\n" +
+                "4. CATEGORIA: As categorias cadastradas pelo usuário são: [" + listaCategorias + "]. Escolha preferencialmente uma categoria existente dessa lista que melhor se encaixe. Se nenhuma servir, sugira um nome curto e adequado em \"categoriaSugerida\".\n" +
+                "5. CONTAS BANCÁRIAS: As contas cadastradas pelo usuário são: [" + listaContas + "]. Se o comprovante mostrar o banco/instituição pagadora (ex: Nubank, Itaú, Inter, Bradesco, Santander, C6, Caixa) e houver uma conta correspondente na lista do usuário, preencha o nome exato dela em \"contaOrigemSugerida\" (para PIX, SAQUE, TRANSFERENCIA) ou em \"contaDestinoSugerida\" (para DEPOSITO ou destino de TRANSFERENCIA). Se não souber, deixe string vazia \"\".\n" +
+                "6. LGPD: Não inclua CPF, chave Pix de CPF/telefone/e-mail nem número de cartão na descrição ou justificativa.\n" +
+                "7. Retorne APENAS o JSON puro, sem blocos markdown (sem ```json).\n" +
                 contextBuilder.toString();
 
         HttpHeaders headers = new HttpHeaders();
@@ -313,7 +328,7 @@ public class IaService {
 
         Map<String, Object> textPart = new HashMap<>();
         textPart.put("type", "text");
-        textPart.put("text", "Extraia os dados desta compra no cartão (descrição, valor total, data, número de parcelas e categoria) em formato JSON.");
+        textPart.put("text", "Extraia os dados deste comprovante financeiro (tipoSugerido, descricao, valor, data, totalParcelas, categoriaSugerida, contaOrigemSugerida, contaDestinoSugerida) em formato JSON.");
 
         Map<String, Object> imageUrlObj = new HashMap<>();
         imageUrlObj.put("url", dataUri);
@@ -359,6 +374,37 @@ public class IaService {
                             ? parsed.get("descricao").toString().trim()
                             : "";
                     String descricaoLimpa = higienizarDescricao(descricaoExtraida);
+
+                    // Resolver Conta Origem e Conta Destino sugeridas para os UUIDs reais do usuário
+                    String contaOrigemSugerida = parsed.get("contaOrigemSugerida") != null
+                            ? parsed.get("contaOrigemSugerida").toString().trim()
+                            : "";
+                    if (!contaOrigemSugerida.isEmpty()) {
+                        contasDisponiveis.stream()
+                                .filter(c -> c.getNome().equalsIgnoreCase(contaOrigemSugerida)
+                                        || c.getNome().toLowerCase().contains(contaOrigemSugerida.toLowerCase())
+                                        || contaOrigemSugerida.toLowerCase().contains(c.getNome().toLowerCase()))
+                                .findFirst()
+                                .ifPresent(c -> {
+                                    parsed.put("contaOrigemId", c.getId());
+                                    parsed.put("contaOrigemSugerida", c.getNome());
+                                });
+                    }
+
+                    String contaDestinoSugerida = parsed.get("contaDestinoSugerida") != null
+                            ? parsed.get("contaDestinoSugerida").toString().trim()
+                            : "";
+                    if (!contaDestinoSugerida.isEmpty()) {
+                        contasDisponiveis.stream()
+                                .filter(c -> c.getNome().equalsIgnoreCase(contaDestinoSugerida)
+                                        || c.getNome().toLowerCase().contains(contaDestinoSugerida.toLowerCase())
+                                        || contaDestinoSugerida.toLowerCase().contains(c.getNome().toLowerCase()))
+                                .findFirst()
+                                .ifPresent(c -> {
+                                    parsed.put("contaDestinoId", c.getId());
+                                    parsed.put("contaDestinoSugerida", c.getNome());
+                                });
+                    }
 
                     // Verificar se a descrição já está no dicionário de cache do usuário
                     if (!descricaoLimpa.isEmpty()) {
