@@ -10,7 +10,7 @@ public record ContaPagarModeloCriacaoRequest(
         @Size(max = 100)
         String nome,
 
-        @NotBlank(message = "Tipo é obrigatório (VARIAVEL, FIXO, PARCELADO)")
+        @NotBlank(message = "Tipo é obrigatório (VARIAVEL, FIXO, PARCELADO, AVULSO)")
         String tipo,
 
         @NotNull(message = "Categoria é obrigatória")
@@ -36,5 +36,11 @@ public record ContaPagarModeloCriacaoRequest(
 
         Boolean debitoAutomatico,
 
-        UUID contaPadraoId
+        UUID contaPadraoId,
+
+        @Size(max = 100)
+        String linhaDigitavel,
+
+        @Size(max = 255)
+        String observacao
 ) {}

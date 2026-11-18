@@ -483,8 +483,8 @@ public class IaService {
                 "Data atual de referência: " + hoje + ".\n" +
                 "Analise a imagem enviada e extraia os dados retornando UNICAMENTE um objeto JSON válido no formato:\n" +
                 "{\n" +
-                "  \"nome\": \"Nome claro da conta/fornecedor (ex: Conta de Luz - Enel, Sabesp - Água, Condomínio Edifício Solar, Financiamento Caixa)\",\n" +
-                "  \"tipoContaPagar\": \"VARIAVEL | FIXO | PARCELADO\",\n" +
+                "  \"nome\": \"Nome claro da conta/fornecedor (ex: Conta de Luz - Enel, Sabesp - Água, Condomínio Edifício Solar, Financiamento Caixa, Taxa Detran - Licenciamento)\",\n" +
+                "  \"tipoContaPagar\": \"VARIAVEL | FIXO | PARCELADO | AVULSO\",\n" +
                 "  \"valor\": 245.80,\n" +
                 "  \"dataVencimento\": \"YYYY-MM-DD\",\n" +
                 "  \"diaVencimento\": 15,\n" +
@@ -503,7 +503,8 @@ public class IaService {
                 "1. TIPO DE CONTA (\"tipoContaPagar\"):\n" +
                 "   - \"VARIAVEL\": Contas de consumo cujo valor varia todo mês (Luz/Energia, Água/Esgoto, Gás encanado, Telefone pós-pago por uso).\n" +
                 "   - \"FIXO\": Contas recorrentes de valor fixo ou mensalidade (Condomínio, Internet/Fibra, Aluguel, Plano de Saúde, Escola/Faculdade).\n" +
-                "   - \"PARCELADO\": Boletos com número finito de parcelas ou financiamento (Financiamento Imobiliário Caixa/Bancos, Financiamento de Veículo, IPTU parcelado, Carnê/Acordo).\n" +
+                "   - \"PARCELADO\": Boletos com múltiplas parcelas (> 1 parcela) ou financiamento (Financiamento Imobiliário Caixa/Bancos, Financiamento de Veículo, IPTU parcelado, Carnê/Acordo).\n" +
+                "   - \"AVULSO\": Boleto único/pontual não recorrente (Taxa do Detran, Multa de trânsito, DARF/Guia de imposto única, boleto de compra avulsa ou prestação de serviço único).\n" +
                 "2. PARCELAS (\"numeroParcela\" e \"totalParcelas\"): Se o boleto indicar prestação/parcela (ex: 'Parcela 14/360', 'Prestação 05 de 120', 'Cota 03/10'), extraia os inteiros `numeroParcela` (ex: 14) e `totalParcelas` (ex: 360). Caso contrário, retorne `null`.\n" +
                 "3. VENCIMENTO: Extraia `dataVencimento` no formato ISO 'YYYY-MM-DD' e `diaVencimento` (1 a 31). Se não houver vencimento visível, use a data atual \"" + hoje + "\" e dia " + hoje.getDayOfMonth() + ".\n" +
                 "4. LINHA DIGITÁVEL: Se houver linha digitável de boleto (sequência de ~47 ou 48 dígitos no topo/rodapé do boleto), transcreva com máxima precisão em `linhaDigitavel`. Se não houver, retorne \"\".\n" +

@@ -122,11 +122,12 @@ public class ContaPagarService {
         try {
             tipo = TipoContaPagar.valueOf(req.tipo().toUpperCase());
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tipo inválido. Use VARIAVEL, FIXO ou PARCELADO.");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tipo inválido. Use VARIAVEL, FIXO, PARCELADO ou AVULSO.");
         }
 
-        if (tipo == TipoContaPagar.FIXO && (req.valorPadrao() == null || req.valorPadrao().compareTo(BigDecimal.ZERO) <= 0)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor padrão é obrigatório para contas FIXAS.");
+        if ((tipo == TipoContaPagar.FIXO || tipo == TipoContaPagar.AVULSO)
+                && (req.valorPadrao() == null || req.valorPadrao().compareTo(BigDecimal.ZERO) <= 0)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor é obrigatório para contas FIXAS e boletos AVULSOS.");
         }
 
         int parcelaInicial = 1;
@@ -172,6 +173,10 @@ public class ContaPagarService {
             modelo.setParcelaInicial(parcelaInicial);
             int qtdRestante = totalParcelas - parcelaInicial + 1;
             modelo.setDataFim(mesInicio.plusMonths(qtdRestante - 1));
+        } else if (tipo == TipoContaPagar.AVULSO) {
+            modelo.setTotalParcelas(1);
+            modelo.setParcelaInicial(1);
+            modelo.setDataFim(mesInicio);
         } else {
             modelo.setDataFim(req.dataFim() != null ? req.dataFim().withDayOfMonth(1) : null);
         }
@@ -181,6 +186,19 @@ public class ContaPagarService {
         // Geração inicial de ocorrências
         if (tipo == TipoContaPagar.PARCELADO) {
             gerarTodasParcelas(saved);
+        } else if (tipo == TipoContaPagar.AVULSO) {
+            ContaPagarOcorrencia unica = garantirOcorrenciaNoMes(saved, mesInicio);
+            if (unica != null) {
+                // Preserva a data de vencimento exata informada no boleto avulso e eventual linha digitável/observação
+                unica.setDataVencimento(req.dataInicio());
+                if (req.linhaDigitavel() != null && !req.linhaDigitavel().isBlank()) {
+                    unica.setLinhaDigitavel(req.linhaDigitavel().trim());
+                }
+                if (req.observacao() != null && !req.observacao().isBlank()) {
+                    unica.setObservacao(req.observacao().trim());
+                }
+                ocorrenciaRepository.save(unica);
+            }
         } else {
             LocalDate mesAtual = DiaUtilUtils.hoje().withDayOfMonth(1);
             LocalDate cursor = mesInicio.isBefore(mesAtual) ? mesInicio : mesAtual;

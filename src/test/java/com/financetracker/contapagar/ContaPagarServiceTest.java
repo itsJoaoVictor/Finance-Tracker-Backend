@@ -121,6 +121,8 @@ class ContaPagarServiceTest {
                 LocalDate.of(2026, 11, 1),
                 null,
                 false,
+                null,
+                null,
                 null
         );
 
