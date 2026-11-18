@@ -439,7 +439,8 @@ public class IaServiceCartao {
         requestBody.put("model", openAiModel);
         requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
         requestBody.put("temperature", 0.1);
-        requestBody.put("max_tokens", 300);
+        requestBody.put("max_tokens", 1200);
+        requestBody.put("reasoning", Map.of("enabled", false));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
         ResponseEntity<String> response = restTemplate.postForEntity(

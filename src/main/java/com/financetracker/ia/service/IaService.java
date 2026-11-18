@@ -188,6 +188,8 @@ public class IaService {
         requestBody.put("model", openAiModel);
         requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
         requestBody.put("temperature", 0.1);
+        requestBody.put("max_tokens", 1200);
+        requestBody.put("reasoning", Map.of("enabled", false));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
         ResponseEntity<String> response = restTemplate.postForEntity(openAiBaseUrl + "/chat/completions", entity, String.class);
@@ -345,7 +347,8 @@ public class IaService {
         requestBody.put("model", openAiModel);
         requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
         requestBody.put("temperature", 0.1);
-        requestBody.put("max_tokens", 500);
+        requestBody.put("max_tokens", 1800);
+        requestBody.put("reasoning", Map.of("enabled", false));
 
         try {
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
@@ -358,7 +361,14 @@ public class IaService {
                 if (choices != null && !choices.isEmpty()) {
                     Map<?, ?> choice = (Map<?, ?>) choices.get(0);
                     Map<?, ?> message = (Map<?, ?>) choice.get("message");
-                    String content = ((String) message.get("content")).trim();
+                    Object rawContent = message.get("content");
+                    if (rawContent == null || rawContent.toString().isBlank()) {
+                        rawContent = message.get("reasoning");
+                    }
+                    if (rawContent == null || rawContent.toString().isBlank()) {
+                        throw new RuntimeException("Conteúdo vazio retornado pelo modelo.");
+                    }
+                    String content = rawContent.toString().trim();
                     content = content.replaceAll("```json", "").replaceAll("```", "").trim();
 
                     // Caso o modelo inclua algum texto antes/depois do JSON, extrai apenas o bloco { ... }
@@ -542,7 +552,8 @@ public class IaService {
         requestBody.put("model", openAiModel);
         requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
         requestBody.put("temperature", 0.1);
-        requestBody.put("max_tokens", 650);
+        requestBody.put("max_tokens", 2000);
+        requestBody.put("reasoning", Map.of("enabled", false));
 
         try {
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
@@ -555,7 +566,14 @@ public class IaService {
                 if (choices != null && !choices.isEmpty()) {
                     Map<?, ?> choice = (Map<?, ?>) choices.get(0);
                     Map<?, ?> message = (Map<?, ?>) choice.get("message");
-                    String content = ((String) message.get("content")).trim();
+                    Object rawContent = message.get("content");
+                    if (rawContent == null || rawContent.toString().isBlank()) {
+                        rawContent = message.get("reasoning");
+                    }
+                    if (rawContent == null || rawContent.toString().isBlank()) {
+                        throw new RuntimeException("Conteúdo vazio retornado pelo modelo.");
+                    }
+                    String content = rawContent.toString().trim();
                     content = content.replaceAll("```json", "").replaceAll("```", "").trim();
 
                     int firstBrace = content.indexOf('{');

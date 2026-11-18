@@ -407,7 +407,8 @@ public class IaServiceAssinatura {
         requestBody.put("model", openAiModel);
         requestBody.put("messages", List.of(msgSystem, msgUser));
         requestBody.put("temperature", 0.1);
-        requestBody.put("max_tokens", 200);
+        requestBody.put("max_tokens", 1000);
+        requestBody.put("reasoning", Map.of("enabled", false));
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
         ResponseEntity<String> response = restTemplate.postForEntity(
