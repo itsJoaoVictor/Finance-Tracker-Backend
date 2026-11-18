@@ -449,6 +449,163 @@ public class IaService {
         }
     }
 
+    /**
+     * Analisa uma imagem de Conta / Fatura de Consumo (Luz, Água, Gás, Condomínio, Internet),
+     * Boleto Bancário (Financiamento Habitacional, IPTU, Carnê) ou Comprovante de Pagamento de Boleto
+     * e retorna os dados estruturados para Contas a Pagar & Financiamentos.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> extrairDadosBoleto(String imagemBase64, UUID usuarioId) {
+        if (imagemBase64 == null || imagemBase64.trim().isEmpty()) {
+            throw new IllegalArgumentException("A imagem da conta ou boleto é obrigatória.");
+        }
+        if (openAiApiKey == null || openAiApiKey.trim().isEmpty()) {
+            throw new IllegalStateException("Chave de API da IA não configurada no servidor.");
+        }
+
+        String dataUri = imagemBase64.trim();
+        if (!dataUri.startsWith("data:image/")) {
+            dataUri = "data:image/jpeg;base64," + dataUri;
+        }
+
+        List<Categoria> categoriasDisponiveis = categoriaRepository.findAllByUsuarioId(usuarioId);
+        String listaCategorias = categoriasDisponiveis.stream()
+                .map(Categoria::getNome)
+                .collect(Collectors.joining(", "));
+
+        List<Conta> contasDisponiveis = contaRepository.findByUsuarioIdAndAtivoTrue(usuarioId);
+        String listaContas = contasDisponiveis.stream()
+                .map(Conta::getNome)
+                .collect(Collectors.joining(", "));
+
+        LocalDate hoje = LocalDate.now();
+        String promptSistema = "Você é um assistente especialista em leitura de Contas a Pagar, Faturas de Consumo (Energia/Luz, Água/Saneamento, Gás), Boletos de Condomínio, Internet, IPTU, Boletos de Financiamento Imobiliário/Veicular e Comprovantes de Pagamento de Boleto no Brasil.\n" +
+                "Data atual de referência: " + hoje + ".\n" +
+                "Analise a imagem enviada e extraia os dados retornando UNICAMENTE um objeto JSON válido no formato:\n" +
+                "{\n" +
+                "  \"nome\": \"Nome claro da conta/fornecedor (ex: Conta de Luz - Enel, Sabesp - Água, Condomínio Edifício Solar, Financiamento Caixa)\",\n" +
+                "  \"tipoContaPagar\": \"VARIAVEL | FIXO | PARCELADO\",\n" +
+                "  \"valor\": 245.80,\n" +
+                "  \"dataVencimento\": \"YYYY-MM-DD\",\n" +
+                "  \"diaVencimento\": 15,\n" +
+                "  \"linhaDigitavel\": \"Código numérico da linha digitável / código de barras do boleto (apenas números ou formatado) ou vazio se não houver\",\n" +
+                "  \"observacao\": \"Resumo útil (ex: Consumo 185 kWh - Bandeira Verde, Ref. 11/2026, Prestação 14/360)\",\n" +
+                "  \"numeroParcela\": null,\n" +
+                "  \"totalParcelas\": null,\n" +
+                "  \"jaPago\": false,\n" +
+                "  \"dataPagamento\": null,\n" +
+                "  \"contaBancariaSugerida\": \"NOME_DA_CONTA_SE_COMPROVANTE_DE_PAGAMENTO_OU_VAZIO\",\n" +
+                "  \"categoriaSugerida\": \"NOME_DA_CATEGORIA\",\n" +
+                "  \"confianca\": 0.95,\n" +
+                "  \"justificativa\": \"Breve resumo do que foi identificado no documento\"\n" +
+                "}\n" +
+                "Regras obrigatórias de extração:\n" +
+                "1. TIPO DE CONTA (\"tipoContaPagar\"):\n" +
+                "   - \"VARIAVEL\": Contas de consumo cujo valor varia todo mês (Luz/Energia, Água/Esgoto, Gás encanado, Telefone pós-pago por uso).\n" +
+                "   - \"FIXO\": Contas recorrentes de valor fixo ou mensalidade (Condomínio, Internet/Fibra, Aluguel, Plano de Saúde, Escola/Faculdade).\n" +
+                "   - \"PARCELADO\": Boletos com número finito de parcelas ou financiamento (Financiamento Imobiliário Caixa/Bancos, Financiamento de Veículo, IPTU parcelado, Carnê/Acordo).\n" +
+                "2. PARCELAS (\"numeroParcela\" e \"totalParcelas\"): Se o boleto indicar prestação/parcela (ex: 'Parcela 14/360', 'Prestação 05 de 120', 'Cota 03/10'), extraia os inteiros `numeroParcela` (ex: 14) e `totalParcelas` (ex: 360). Caso contrário, retorne `null`.\n" +
+                "3. VENCIMENTO: Extraia `dataVencimento` no formato ISO 'YYYY-MM-DD' e `diaVencimento` (1 a 31). Se não houver vencimento visível, use a data atual \"" + hoje + "\" e dia " + hoje.getDayOfMonth() + ".\n" +
+                "4. LINHA DIGITÁVEL: Se houver linha digitável de boleto (sequência de ~47 ou 48 dígitos no topo/rodapé do boleto), transcreva com máxima precisão em `linhaDigitavel`. Se não houver, retorne \"\".\n" +
+                "5. BOLETO EM ABERTO vs COMPROVANTE DE PAGAMENTO (\"jaPago\"):\n" +
+                "   - Se a imagem for a fatura/boleto para pagar, defina `\"jaPago\": false`.\n" +
+                "   - Se a imagem for um COMPROVANTE DE PAGAMENTO já realizado, defina `\"jaPago\": true`, preencha `\"dataPagamento\": \"YYYY-MM-DD\"` e, se o banco pagador corresponder a uma das contas do usuário [" + listaContas + "], informe o nome dela em `\"contaBancariaSugerida\"`.\n" +
+                "6. CATEGORIA: As categorias cadastradas pelo usuário são: [" + listaCategorias + "]. Escolha preferencialmente uma categoria dessa lista. Se nenhuma servir, sugira um nome curto em `\"categoriaSugerida\"`.\n" +
+                "7. LGPD: Não inclua CPF, endereço residencial completo do titular nem dados sensíveis na observação ou justificativa.\n" +
+                "8. Retorne APENAS o JSON puro, sem blocos markdown (sem ```json).";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Bearer " + openAiApiKey);
+
+        Map<String, Object> messageSystem = new HashMap<>();
+        messageSystem.put("role", "system");
+        messageSystem.put("content", promptSistema);
+
+        Map<String, Object> textPart = new HashMap<>();
+        textPart.put("type", "text");
+        textPart.put("text", "Extraia os dados desta conta, fatura ou boleto (nome, tipoContaPagar, valor, dataVencimento, diaVencimento, linhaDigitavel, observacao, numeroParcela, totalParcelas, jaPago, dataPagamento, contaBancariaSugerida, categoriaSugerida) em formato JSON.");
+
+        Map<String, Object> imageUrlObj = new HashMap<>();
+        imageUrlObj.put("url", dataUri);
+
+        Map<String, Object> imagePart = new HashMap<>();
+        imagePart.put("type", "image_url");
+        imagePart.put("image_url", imageUrlObj);
+
+        Map<String, Object> messageUser = new HashMap<>();
+        messageUser.put("role", "user");
+        messageUser.put("content", Arrays.asList(textPart, imagePart));
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", openAiModel);
+        requestBody.put("messages", Arrays.asList(messageSystem, messageUser));
+        requestBody.put("temperature", 0.1);
+        requestBody.put("max_tokens", 650);
+
+        try {
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    openAiBaseUrl + "/chat/completions", entity, String.class);
+
+            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+                Map<?, ?> responseMap = objectMapper.readValue(response.getBody(), Map.class);
+                List<?> choices = (List<?>) responseMap.get("choices");
+                if (choices != null && !choices.isEmpty()) {
+                    Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+                    Map<?, ?> message = (Map<?, ?>) choice.get("message");
+                    String content = ((String) message.get("content")).trim();
+                    content = content.replaceAll("```json", "").replaceAll("```", "").trim();
+
+                    int firstBrace = content.indexOf('{');
+                    int lastBrace = content.lastIndexOf('}');
+                    if (firstBrace >= 0 && lastBrace > firstBrace) {
+                        content = content.substring(firstBrace, lastBrace + 1);
+                    }
+
+                    Map<String, Object> parsed = objectMapper.readValue(content, Map.class);
+
+                    // Resolver Conta Bancária sugerida para UUID
+                    String contaSugerida = parsed.get("contaBancariaSugerida") != null
+                            ? parsed.get("contaBancariaSugerida").toString().trim()
+                            : "";
+                    if (!contaSugerida.isEmpty()) {
+                        contasDisponiveis.stream()
+                                .filter(c -> c.getNome().equalsIgnoreCase(contaSugerida)
+                                        || c.getNome().toLowerCase().contains(contaSugerida.toLowerCase())
+                                        || contaSugerida.toLowerCase().contains(c.getNome().toLowerCase()))
+                                .findFirst()
+                                .ifPresent(c -> {
+                                    parsed.put("contaBancariaId", c.getId());
+                                    parsed.put("contaBancariaSugerida", c.getNome());
+                                });
+                    }
+
+                    // Resolver Categoria sugerida para UUID
+                    String categoriaSugerida = parsed.get("categoriaSugerida") != null
+                            ? parsed.get("categoriaSugerida").toString().trim()
+                            : "";
+                    if (!categoriaSugerida.isEmpty()) {
+                        categoriasDisponiveis.stream()
+                                .filter(c -> c.getNome().equalsIgnoreCase(categoriaSugerida)
+                                        || c.getNome().toLowerCase().contains(categoriaSugerida.toLowerCase())
+                                        || categoriaSugerida.toLowerCase().contains(c.getNome().toLowerCase()))
+                                .findFirst()
+                                .ifPresent(c -> {
+                                    parsed.put("categoriaId", c.getId());
+                                    parsed.put("categoriaSugerida", c.getNome());
+                                });
+                    }
+
+                    return parsed;
+                }
+            }
+            throw new RuntimeException("A IA não retornou dados válidos para o boleto/conta enviado.");
+        } catch (Exception e) {
+            throw new RuntimeException("Não foi possível extrair os dados do boleto/conta: " + e.getMessage(), e);
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // RN-02 — DETECÇÃO DE COBRANÇA DUPLICADA
     // ═══════════════════════════════════════════════════════════════════

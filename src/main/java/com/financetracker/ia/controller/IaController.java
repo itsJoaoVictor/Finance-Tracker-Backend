@@ -102,6 +102,31 @@ public class IaController {
         }
     }
 
+    @PostMapping("/extrair-boleto")
+    public ResponseEntity<?> extrairBoleto(@RequestBody Map<String, String> request,
+                                           @AuthenticationPrincipal UserDetails userDetails) {
+        String imagemBase64 = request.get("imagemBase64");
+        if (imagemBase64 == null || imagemBase64.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "O campo 'imagemBase64' é obrigatório."));
+        }
+
+        Optional<Usuario> usuarioOpt = getUsuario(userDetails);
+        if (usuarioOpt.isEmpty()) {
+            return ResponseEntity.status(401).body(Map.of("error", "Usuário não autenticado."));
+        }
+
+        try {
+            Map<String, Object> resultado = iaService.extrairDadosBoleto(imagemBase64, usuarioOpt.get().getId());
+            return ResponseEntity.ok(resultado);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(502).body(Map.of(
+                    "error", "Não foi possível ler a conta ou boleto com a IA. Verifique se a imagem está nítida ou preencha manualmente."
+            ));
+        }
+    }
+
     // ─── RN-14: Feedback Loop / Correção de Categoria ─────────────────
 
     /**
