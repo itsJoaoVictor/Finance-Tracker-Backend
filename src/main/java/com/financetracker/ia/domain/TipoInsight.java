@@ -27,5 +27,11 @@ public enum TipoInsight {
     OTIMIZACAO_PARCELAMENTO,
 
     // ── Insights de Prevenção (IaServiceAssinatura) ──────────────────────
-    EFEITO_DOMINO
+    EFEITO_DOMINO,
+
+    // ── Insights de Contas a Pagar ───────────────────────────────────────
+    CONTA_ACIMA_MEDIA,
+    CONTA_VENCENDO,
+    CONTA_ATRASADA,
+    CONTA_SEM_VALOR
 }

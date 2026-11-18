@@ -6,5 +6,6 @@ public enum TipoTransacao {
     TRANSFERENCIA,
     PIX,
     COMPRA_CREDITO,
-    PAGAMENTO_CREDITO
+    PAGAMENTO_CREDITO,
+    PAGAMENTO_BOLETO
 }

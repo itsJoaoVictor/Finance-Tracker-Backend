@@ -7,6 +7,10 @@ import com.financetracker.cartao.dto.CartaoResponse;
 import com.financetracker.cartao.service.CartaoService;
 import com.financetracker.conta.dto.ContaResponse;
 import com.financetracker.conta.service.ContaService;
+import com.financetracker.contapagar.entity.ContaPagarOcorrencia;
+import com.financetracker.contapagar.enums.StatusOcorrencia;
+import com.financetracker.contapagar.repository.ContaPagarOcorrenciaRepository;
+import com.financetracker.contapagar.util.DiaUtilUtils;
 import com.financetracker.dashboard.dto.DashboardResumoResponse;
 import com.financetracker.dashboard.dto.LayoutRequest;
 import com.financetracker.dashboard.entity.DashboardLayout;
@@ -48,6 +52,7 @@ public class DashboardService {
     private final DashboardLayoutRepository dashboardLayoutRepository;
     private final UsuarioRepository usuarioRepository;
     private final ObjectMapper objectMapper;
+    private final ContaPagarOcorrenciaRepository contaPagarOcorrenciaRepository;
 
     public DashboardService(ContaService contaService,
                             CartaoService cartaoService,
@@ -57,7 +62,8 @@ public class DashboardService {
                             IaInsightRepository iaInsightRepository,
                             DashboardLayoutRepository dashboardLayoutRepository,
                             UsuarioRepository usuarioRepository,
-                            ObjectMapper objectMapper) {
+                            ObjectMapper objectMapper,
+                            ContaPagarOcorrenciaRepository contaPagarOcorrenciaRepository) {
         this.contaService = contaService;
         this.cartaoService = cartaoService;
         this.transacaoRepository = transacaoRepository;
@@ -67,6 +73,7 @@ public class DashboardService {
         this.dashboardLayoutRepository = dashboardLayoutRepository;
         this.usuarioRepository = usuarioRepository;
         this.objectMapper = objectMapper;
+        this.contaPagarOcorrenciaRepository = contaPagarOcorrenciaRepository;
     }
 
     private Usuario getAuthenticatedUsuario() {
@@ -192,20 +199,82 @@ public class DashboardService {
 
     private DashboardResumoResponse.PreferenciasLayout getPreferenciasLayout(UUID usuarioId) {
         DashboardLayout layout = dashboardLayoutRepository.findByUsuarioId(usuarioId).orElse(null);
+        List<String> defaultOrder = List.of("kpis", "fluxoCaixaProjetado", "contasPagar", "cartoes", "insights", "graficoDespesas", "ultimasTransacoes");
         if (layout == null) {
-            return new DashboardResumoResponse.PreferenciasLayout(
-                    List.of("kpis", "fluxoCaixaProjetado", "cartoes", "insights", "graficoDespesas", "ultimasTransacoes"),
-                    List.of());
+            return new DashboardResumoResponse.PreferenciasLayout(defaultOrder, List.of());
         }
         try {
-            List<String> ordem = objectMapper.readValue(layout.getOrdemWidgets(), new TypeReference<>() {});
+            List<String> ordem = new ArrayList<>(objectMapper.readValue(layout.getOrdemWidgets(), new TypeReference<>() {}));
+            if (!ordem.contains("contasPagar")) {
+                int idx = ordem.indexOf("fluxoCaixaProjetado");
+                if (idx >= 0) ordem.add(idx + 1, "contasPagar");
+                else ordem.add("contasPagar");
+            }
             List<String> ocultos = objectMapper.readValue(layout.getWidgetsOcultos(), new TypeReference<>() {});
             return new DashboardResumoResponse.PreferenciasLayout(ordem, ocultos);
         } catch (JsonProcessingException e) {
-            return new DashboardResumoResponse.PreferenciasLayout(
-                    List.of("kpis", "fluxoCaixaProjetado", "cartoes", "insights", "graficoDespesas", "ultimasTransacoes"),
-                    List.of());
+            return new DashboardResumoResponse.PreferenciasLayout(defaultOrder, List.of());
         }
+    }
+
+    @Transactional(readOnly = true)
+    public DashboardResumoResponse.ContasPagarDashboard obterContasPagarDashboard() {
+        UUID usuarioId = getAuthenticatedUsuario().getId();
+        LocalDate hoje = DiaUtilUtils.hoje();
+        LocalDate mesAtual = hoje.withDayOfMonth(1);
+        LocalDate limite7Dias = hoje.plusDays(7);
+
+        List<ContaPagarOcorrencia> doMes = contaPagarOcorrenciaRepository
+                .findByUsuarioAndMesReferenciaBetween(usuarioId, mesAtual, mesAtual);
+
+        BigDecimal pago = BigDecimal.ZERO;
+        BigDecimal pendente = BigDecimal.ZERO;
+        BigDecimal estimado = BigDecimal.ZERO;
+        for (ContaPagarOcorrencia o : doMes) {
+            if (o.getStatus() == StatusOcorrencia.CANCELADA) continue;
+            if (o.getStatus() == StatusOcorrencia.PAGA) {
+                pago = pago.add(o.getValorPago() != null ? o.getValorPago() : BigDecimal.ZERO);
+            } else if (o.getStatus() == StatusOcorrencia.PENDENTE) {
+                pendente = pendente.add(o.getValorEfetivo());
+            } else if (o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR) {
+                estimado = estimado.add(o.getValorEfetivo());
+            }
+        }
+
+        List<ContaPagarOcorrencia> ateSeteDias = contaPagarOcorrenciaRepository
+                .findPendentesAteData(usuarioId, limite7Dias);
+
+        BigDecimal totalAtrasado = BigDecimal.ZERO;
+        int qtdAtrasadas = 0;
+        int qtdVencendo7Dias = 0;
+        List<DashboardResumoResponse.ItemContaPagarDashboard> itens = new ArrayList<>();
+
+        for (ContaPagarOcorrencia o : ateSeteDias) {
+            boolean atrasada = o.isAtrasada(hoje);
+            if (atrasada) {
+                qtdAtrasadas++;
+                totalAtrasado = totalAtrasado.add(o.getValorEfetivo());
+            } else {
+                qtdVencendo7Dias++;
+            }
+            itens.add(new DashboardResumoResponse.ItemContaPagarDashboard(
+                    o.getId(),
+                    o.getModelo().getId(),
+                    o.getModelo().getNome(),
+                    o.getModelo().getAgrupador(),
+                    o.getModelo().getTipo().name(),
+                    o.getDataVencimento(),
+                    o.getValorEfetivo(),
+                    o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR,
+                    o.getStatusEfetivo(),
+                    o.getNumeroParcela(),
+                    o.getModelo().getTotalParcelas()
+            ));
+        }
+
+        return new DashboardResumoResponse.ContasPagarDashboard(
+                pago, pendente, estimado, totalAtrasado, qtdAtrasadas, qtdVencendo7Dias, itens
+        );
     }
 
     private DashboardResumoResponse.Projecao15Dias calcularProjecao15Dias(
@@ -225,7 +294,8 @@ public class DashboardService {
         for (Transacao t : transacoes) {
             if (t.getTipo() == TipoTransacao.DEPOSITO) {
                 receitas = receitas.add(t.getValor());
-            } else if (t.getTipo() == TipoTransacao.SAQUE || t.getTipo() == TipoTransacao.PIX) {
+            } else if (t.getTipo() == TipoTransacao.SAQUE || t.getTipo() == TipoTransacao.PIX
+                    || t.getTipo() == TipoTransacao.PAGAMENTO_BOLETO) {
                 despesas = despesas.add(t.getValor());
             }
         }
@@ -233,11 +303,13 @@ public class DashboardService {
         List<AgendamentoTransacao> agendamentos = agendamentoRepository
                 .findByAtivoTrueAndDataProximaExecucaoLessThanEqual(dataLimite);
         for (AgendamentoTransacao a : agendamentos) {
+            if (!a.getUsuario().getId().equals(usuarioId)) continue;
             LocalDate prox = a.getDataProximaExecucao();
             while (!prox.isAfter(dataLimite)) {
                 if (a.getTipo() == TipoTransacao.DEPOSITO) {
                     receitas = receitas.add(a.getValor());
-                } else if (a.getTipo() == TipoTransacao.SAQUE || a.getTipo() == TipoTransacao.PIX) {
+                } else if (a.getTipo() == TipoTransacao.SAQUE || a.getTipo() == TipoTransacao.PIX
+                        || a.getTipo() == TipoTransacao.PAGAMENTO_BOLETO) {
                     despesas = despesas.add(a.getValor());
                 }
                 prox = switch (a.getRecorrencia()) {
@@ -259,7 +331,22 @@ public class DashboardService {
             }
         }
 
-        BigDecimal saldoProjetado = saldoAtual.add(receitas).subtract(despesas).subtract(faturasPendentes);
+        BigDecimal contasPagarPendentes = BigDecimal.ZERO;
+        BigDecimal contasPagarEstimadas = BigDecimal.ZERO;
+        List<String> nomesEstimados = new ArrayList<>();
+        List<ContaPagarOcorrencia> ocorrenciasPendentes = contaPagarOcorrenciaRepository
+                .findPendentesAteData(usuarioId, dataLimite);
+        for (ContaPagarOcorrencia oc : ocorrenciasPendentes) {
+            BigDecimal val = oc.getValorEfetivo();
+            contasPagarPendentes = contasPagarPendentes.add(val);
+            if (oc.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR && val.compareTo(BigDecimal.ZERO) > 0) {
+                contasPagarEstimadas = contasPagarEstimadas.add(val);
+                nomesEstimados.add(oc.getModelo().getNome());
+            }
+        }
+
+        BigDecimal saldoProjetado = saldoAtual.add(receitas).subtract(despesas)
+                .subtract(faturasPendentes).subtract(contasPagarPendentes);
 
         String status;
         StringBuilder msg = new StringBuilder();
@@ -285,6 +372,20 @@ public class DashboardService {
             msg.append("Fatura(s) de R$ ")
                     .append(String.format("%.2f", faturasPendentes))
                     .append(" vence(m) no período. ");
+        }
+
+        if (contasPagarPendentes.compareTo(BigDecimal.ZERO) > 0) {
+            msg.append("Contas a pagar de R$ ")
+                    .append(String.format("%.2f", contasPagarPendentes))
+                    .append(" vencem no período");
+            if (contasPagarEstimadas.compareTo(BigDecimal.ZERO) > 0) {
+                msg.append(" (inclui R$ ")
+                        .append(String.format("%.2f", contasPagarEstimadas))
+                        .append(" estimados de ")
+                        .append(String.join(", ", nomesEstimados))
+                        .append(")");
+            }
+            msg.append(". ");
         }
 
         return new DashboardResumoResponse.Projecao15Dias(saldoProjetado, status, msg.toString().trim());

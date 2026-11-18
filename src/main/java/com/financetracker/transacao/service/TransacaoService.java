@@ -8,6 +8,9 @@ import com.financetracker.categoria.repository.CategoriaRepository;
 import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.repository.ContaRepository;
+import com.financetracker.contapagar.entity.ContaPagarOcorrencia;
+import com.financetracker.contapagar.enums.StatusOcorrencia;
+import com.financetracker.contapagar.repository.ContaPagarOcorrenciaRepository;
 import com.financetracker.transacao.dto.*;
 import com.financetracker.transacao.entity.*;
 import com.financetracker.transacao.enums.*;
@@ -44,6 +47,7 @@ public class TransacaoService {
     private final CategoriaRepository categoriaRepository;
     private final UsuarioRepository usuarioRepository;
     private final com.financetracker.ia.service.IaService iaService;
+    private final ContaPagarOcorrenciaRepository contaPagarOcorrenciaRepository;
 
     public TransacaoService(TransacaoRepository transacaoRepository,
                             FaturaRepository faturaRepository,
@@ -55,7 +59,8 @@ public class TransacaoService {
                             CartaoRepository cartaoRepository,
                             CategoriaRepository categoriaRepository,
                             UsuarioRepository usuarioRepository,
-                            com.financetracker.ia.service.IaService iaService) {
+                            com.financetracker.ia.service.IaService iaService,
+                            ContaPagarOcorrenciaRepository contaPagarOcorrenciaRepository) {
         this.transacaoRepository = transacaoRepository;
         this.faturaRepository = faturaRepository;
         this.metasRepository = metasRepository;
@@ -67,6 +72,7 @@ public class TransacaoService {
         this.categoriaRepository = categoriaRepository;
         this.usuarioRepository = usuarioRepository;
         this.iaService = iaService;
+        this.contaPagarOcorrenciaRepository = contaPagarOcorrenciaRepository;
     }
 
     private Usuario getAuthenticatedUsuario() {
@@ -121,7 +127,7 @@ public class TransacaoService {
 
         if (categoriaId == null) return null;
         if (tipo != TipoTransacao.SAQUE && tipo != TipoTransacao.PIX
-                && tipo != TipoTransacao.COMPRA_CREDITO) return null;
+                && tipo != TipoTransacao.COMPRA_CREDITO && tipo != TipoTransacao.PAGAMENTO_BOLETO) return null;
 
         LocalDate inicioMes = LocalDate.now().withDayOfMonth(1);
         OrcamentoCategoria orcamento = orcamentoRepository
@@ -132,7 +138,7 @@ public class TransacaoService {
         BigDecimal limite = orcamento.getLimiteMensal();
         BigDecimal jaGasto = transacaoRepository.sumValorByCategoriaAndPeriodo(
                 usuarioId, categoriaId, inicioMes, inicioMes.plusMonths(1).minusDays(1),
-                List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO));
+                List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO, TipoTransacao.PAGAMENTO_BOLETO));
         BigDecimal total = (jaGasto != null ? jaGasto : BigDecimal.ZERO).add(novoValor);
 
         double percentual = total.divide(limite, 4, RoundingMode.HALF_UP)
@@ -609,7 +615,7 @@ public class TransacaoService {
                 conta.setSaldo(conta.getSaldo().subtract(valorEstorno));
                 contaRepository.save(conta);
             }
-            case SAQUE, PIX -> {
+            case SAQUE, PIX, PAGAMENTO_BOLETO -> {
                 if (transacao.getMetaDestino() != null) {
                     // Reverter aporte do cofrinho
                     MetasEconomia meta = transacao.getMetaDestino();
@@ -679,9 +685,21 @@ public class TransacaoService {
             }
         }
 
+        reabrirOcorrenciaContaPagarSeExistir(transacao.getId());
+
         transacao.setEstornada(true);
         transacao.setAtivo(false);
         return new TransacaoResponse(transacaoRepository.save(transacao));
+    }
+
+    private void reabrirOcorrenciaContaPagarSeExistir(UUID transacaoId) {
+        contaPagarOcorrenciaRepository.findByTransacaoId(transacaoId).ifPresent(oc -> {
+            oc.setStatus(StatusOcorrencia.PENDENTE);
+            oc.setValorPago(null);
+            oc.setDataPagamento(null);
+            oc.setTransacao(null);
+            contaPagarOcorrenciaRepository.save(oc);
+        });
     }
 
     // ── Antecipar Parcelas (POST /api/transacoes/{id}/antecipar-parcelas) ──
@@ -780,6 +798,7 @@ public class TransacaoService {
 
         // RN-10 — Reverter impacto no saldo/limite
         reverterImpacto(transacao, usuario);
+        reabrirOcorrenciaContaPagarSeExistir(transacao.getId());
 
         transacao.setAtivo(false);
         transacao.setEstornada(true);
@@ -798,7 +817,7 @@ public class TransacaoService {
                 c.setSaldo(c.getSaldo().subtract(t.getValor()));
                 contaRepository.save(c);
             }
-            case SAQUE, PIX -> {
+            case SAQUE, PIX, PAGAMENTO_BOLETO -> {
                 if (t.getMetaDestino() != null) {
                     MetasEconomia meta = t.getMetaDestino();
                     meta.setValorAcumulado(meta.getValorAcumulado().subtract(t.getValor()));
@@ -855,7 +874,7 @@ public class TransacaoService {
         for (Transacao t : transacoesFuturas) {
             switch (t.getTipo()) {
                 case DEPOSITO -> receitas = receitas.add(t.getValor());
-                case SAQUE, PIX -> despesas = despesas.add(t.getValor());
+                case SAQUE, PIX, PAGAMENTO_BOLETO -> despesas = despesas.add(t.getValor());
             }
         }
 
@@ -863,11 +882,12 @@ public class TransacaoService {
         List<AgendamentoTransacao> agendamentos = agendamentoRepository
                 .findByAtivoTrueAndDataProximaExecucaoLessThanEqual(dataLimite);
         for (AgendamentoTransacao a : agendamentos) {
+            if (!a.getUsuario().getId().equals(usuario.getId())) continue;
             LocalDate prox = a.getDataProximaExecucao();
             while (!prox.isAfter(dataLimite)) {
                 switch (a.getTipo()) {
                     case DEPOSITO -> receitas = receitas.add(a.getValor());
-                    case SAQUE, PIX -> despesas = despesas.add(a.getValor());
+                    case SAQUE, PIX, PAGAMENTO_BOLETO -> despesas = despesas.add(a.getValor());
                 }
                 prox = switch (a.getRecorrencia()) {
                     case SEMANAL -> prox.plusWeeks(1);
@@ -875,6 +895,13 @@ public class TransacaoService {
                     case MENSAL -> prox.plusMonths(1);
                 };
             }
+        }
+
+        // Contas a Pagar pendentes na janela
+        List<ContaPagarOcorrencia> contasPagarPendentes = contaPagarOcorrenciaRepository
+                .findPendentesAteData(usuario.getId(), dataLimite);
+        for (ContaPagarOcorrencia oc : contasPagarPendentes) {
+            despesas = despesas.add(oc.getValorEfetivo());
         }
 
         // Faturas a vencer

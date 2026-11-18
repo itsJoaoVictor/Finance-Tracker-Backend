@@ -8,6 +8,7 @@ import com.financetracker.cartao.exception.LimiteDisponivelInvalidoException;
 import com.financetracker.categoria.exception.*;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.exception.LimitaContasException;
+import com.financetracker.contapagar.exception.ContaPagarNaoEncontradaException;
 import com.financetracker.dashboard.exception.DashboardLoadException;
 import com.financetracker.relatorio.exception.ExportLimitExceededException;
 import com.financetracker.relatorio.exception.InvalidPeriodException;
@@ -27,6 +28,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ContaNaoEncontradaException.class)
     public ResponseEntity<Map<String, String>> handleContaNaoEncontrada(ContaNaoEncontradaException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(ContaPagarNaoEncontradaException.class)
+    public ResponseEntity<Map<String, String>> handleContaPagarNaoEncontrada(ContaPagarNaoEncontradaException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("error", ex.getMessage()));
     }

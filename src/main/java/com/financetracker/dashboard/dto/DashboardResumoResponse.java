@@ -66,4 +66,28 @@ public record DashboardResumoResponse(
             String mensagem,
             LocalDateTime criadoEm
     ) {}
+
+    public record ContasPagarDashboard(
+            BigDecimal totalPagoMes,
+            BigDecimal totalPendenteMes,
+            BigDecimal totalEstimadoMes,
+            BigDecimal totalAtrasado,
+            int qtdAtrasadas,
+            int qtdVencendo7Dias,
+            List<ItemContaPagarDashboard> proximasOuAtrasadas
+    ) {}
+
+    public record ItemContaPagarDashboard(
+            UUID ocorrenciaId,
+            UUID modeloId,
+            String nome,
+            String agrupador,
+            String tipo,
+            LocalDate dataVencimento,
+            BigDecimal valorEfetivo,
+            boolean valorEstimado,
+            String statusEfetivo,
+            Integer numeroParcela,
+            Integer totalParcelas
+    ) {}
 }

@@ -56,6 +56,11 @@ public class DashboardController {
         return ResponseEntity.ok(dashboardService.obterInsights());
     }
 
+    @GetMapping("/contas-pagar")
+    public ResponseEntity<DashboardResumoResponse.ContasPagarDashboard> obterContasPagar() {
+        return ResponseEntity.ok(dashboardService.obterContasPagarDashboard());
+    }
+
     @PutMapping("/layout")
     public ResponseEntity<Void> salvarLayout(@RequestBody LayoutRequest request) {
         dashboardService.salvarLayout(request);

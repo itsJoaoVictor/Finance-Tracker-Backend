@@ -118,7 +118,7 @@ public class OrcamentoService {
             // O progresso/gasto é sempre calculado no mês de referência atual
             BigDecimal totalGasto = transacaoRepository.sumValorByCategoriaAndPeriodo(
                     usuario.getId(), o.getCategoria().getId(), inicioMes, fimMes,
-                    List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO));
+                    List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO, TipoTransacao.PAGAMENTO_BOLETO));
             return new OrcamentoResumoResponse(
                     o.getId(),
                     o.getCategoria().getId(),

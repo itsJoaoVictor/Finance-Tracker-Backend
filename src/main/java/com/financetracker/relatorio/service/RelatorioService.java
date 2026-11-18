@@ -60,7 +60,7 @@ public class RelatorioService {
             tipos = List.of(TipoTransacao.valueOf(tipo));
         } else {
             // Despesas por padrão
-            tipos = List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO);
+            tipos = List.of(TipoTransacao.SAQUE, TipoTransacao.PIX, TipoTransacao.COMPRA_CREDITO, TipoTransacao.PAGAMENTO_BOLETO);
         }
 
         // Buscar transações do período
@@ -149,7 +149,8 @@ public class RelatorioService {
             BigDecimal despesas = mesTransacoes.stream()
                     .filter(t -> t.getTipo() == TipoTransacao.SAQUE
                             || t.getTipo() == TipoTransacao.PIX
-                            || t.getTipo() == TipoTransacao.COMPRA_CREDITO)
+                            || t.getTipo() == TipoTransacao.COMPRA_CREDITO
+                            || t.getTipo() == TipoTransacao.PAGAMENTO_BOLETO)
                     .map(Transacao::getValor)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
 
@@ -233,7 +234,8 @@ public class RelatorioService {
             if (t.getTipo() == TipoTransacao.DEPOSITO) {
                 totalReceitas = totalReceitas.add(t.getValor());
             } else if (t.getTipo() == TipoTransacao.SAQUE || t.getTipo() == TipoTransacao.PIX
-                    || t.getTipo() == TipoTransacao.COMPRA_CREDITO) {
+                    || t.getTipo() == TipoTransacao.COMPRA_CREDITO
+                    || t.getTipo() == TipoTransacao.PAGAMENTO_BOLETO) {
                 totalDespesas = totalDespesas.add(t.getValor());
             }
         }

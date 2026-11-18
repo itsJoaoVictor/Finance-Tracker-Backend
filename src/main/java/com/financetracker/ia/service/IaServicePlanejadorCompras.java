@@ -2,6 +2,9 @@ package com.financetracker.ia.service;
 
 import com.financetracker.cartao.entity.Cartao;
 import com.financetracker.cartao.repository.CartaoRepository;
+import com.financetracker.contapagar.entity.ContaPagarOcorrencia;
+import com.financetracker.contapagar.enums.StatusOcorrencia;
+import com.financetracker.contapagar.repository.ContaPagarOcorrenciaRepository;
 import com.financetracker.ia.dto.AnaliseCartaoSimulacaoDTO;
 import com.financetracker.ia.dto.MesSimulacaoDTO;
 import com.financetracker.ia.dto.ProjecaoCartoesResponse;
@@ -29,15 +32,18 @@ public class IaServicePlanejadorCompras {
     private final FaturaRepository faturaRepository;
     private final CartaoRepository cartaoRepository;
     private final IaServiceCartao iaServiceCartao;
+    private final ContaPagarOcorrenciaRepository contaPagarOcorrenciaRepository;
 
     public IaServicePlanejadorCompras(TransacaoRepository transacaoRepository, 
                                       FaturaRepository faturaRepository, 
                                       CartaoRepository cartaoRepository,
-                                      IaServiceCartao iaServiceCartao) {
+                                      IaServiceCartao iaServiceCartao,
+                                      ContaPagarOcorrenciaRepository contaPagarOcorrenciaRepository) {
         this.transacaoRepository = transacaoRepository;
         this.faturaRepository = faturaRepository;
         this.cartaoRepository = cartaoRepository;
         this.iaServiceCartao = iaServiceCartao;
+        this.contaPagarOcorrenciaRepository = contaPagarOcorrenciaRepository;
     }
 
     public SimulacaoCompraResponse simularCompra(Usuario usuario, SimulacaoCompraRequest request) {
@@ -157,7 +163,15 @@ public class IaServicePlanejadorCompras {
 
             BigDecimal parcelaDaCompra = (i < parcelas) ? valorParcela : BigDecimal.ZERO;
 
-            BigDecimal saldoLivre = medianaReceita.subtract(medianaDespesaBase).subtract(faturasProjetadas).subtract(parcelaDaCompra);
+            BigDecimal contasPagarMes = contaPagarOcorrenciaRepository
+                    .findByUsuarioAndMesReferenciaBetween(usuario.getId(), mesReferenciaFatura, mesReferenciaFatura)
+                    .stream()
+                    .filter(o -> o.getStatus() == StatusOcorrencia.PENDENTE || o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR)
+                    .map(ContaPagarOcorrencia::getValorEfetivo)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            BigDecimal despesaBaseMaisBoletos = medianaDespesaBase.add(contasPagarMes);
+            BigDecimal saldoLivre = medianaReceita.subtract(despesaBaseMaisBoletos).subtract(faturasProjetadas).subtract(parcelaDaCompra);
             
             String status = "VERDE";
             if (saldoLivre.compareTo(BigDecimal.ZERO) < 0) {

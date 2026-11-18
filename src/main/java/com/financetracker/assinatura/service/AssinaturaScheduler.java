@@ -12,7 +12,7 @@ public class AssinaturaScheduler {
         this.assinaturaService = assinaturaService;
     }
 
-    @Scheduled(cron = "0 0 6 * * ?") // Runs daily at 6 AM
+    @Scheduled(cron = "0 0 6 * * ?", zone = "America/Sao_Paulo") // Runs daily at 6 AM
     public void processarCobrancas() {
         assinaturaService.processarCobrancasPendentes();
     }

@@ -32,7 +32,7 @@ public class AgendamentoScheduler {
         this.contaRepository = contaRepository;
     }
 
-    @Scheduled(cron = "0 30 6 * * ?") // Runs daily at 6:30 AM (after assinaturas)
+    @Scheduled(cron = "0 30 6 * * ?", zone = "America/Sao_Paulo") // Runs daily at 6:30 AM (after assinaturas)
     @Transactional
     public void processarAgendamentos() {
         LocalDate hoje = LocalDate.now();

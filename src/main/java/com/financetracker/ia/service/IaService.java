@@ -739,7 +739,8 @@ public class IaService {
         List<Categoria> categorias = categoriaRepository.findAllByUsuarioId(usuarioId);
         List<TipoTransacao> tiposSaida = List.of(
                 TipoTransacao.COMPRA_CREDITO, TipoTransacao.PIX,
-                TipoTransacao.TRANSFERENCIA, TipoTransacao.SAQUE, TipoTransacao.PAGAMENTO_CREDITO);
+                TipoTransacao.TRANSFERENCIA, TipoTransacao.SAQUE,
+                TipoTransacao.PAGAMENTO_CREDITO, TipoTransacao.PAGAMENTO_BOLETO);
         for (Categoria categoria : categorias) {
             BigDecimal gastoMes = transacaoRepository.sumValorByCategoriaAndPeriodo(
                     usuarioId, categoria.getId(), inicioMes, hoje, tiposSaida);
