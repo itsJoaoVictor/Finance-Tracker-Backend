@@ -186,8 +186,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<Map<String, String>> handleDataIntegrity(DataIntegrityViolationException ex) {
+        String detalhe = ex.getMostSpecificCause() != null ? ex.getMostSpecificCause().getMessage() : ex.getMessage();
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
-                .body(Map.of("error", "Dados inválidos ou em conflito ao salvar no banco."));
+                .body(Map.of("error", "Dados inválidos ou em conflito ao salvar no banco: " + detalhe));
     }
 
     @ExceptionHandler(Exception.class)
