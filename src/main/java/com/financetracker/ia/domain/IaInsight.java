@@ -1,5 +1,6 @@
 package com.financetracker.ia.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.financetracker.usuario.entity.Usuario;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
@@ -15,6 +16,7 @@ public class IaInsight {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "usuario_id", nullable = false)
     @org.hibernate.annotations.OnDelete(action = org.hibernate.annotations.OnDeleteAction.CASCADE)
