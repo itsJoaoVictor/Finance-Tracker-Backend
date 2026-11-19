@@ -52,10 +52,10 @@ public class ContaPagarOcorrencia {
     @Column(nullable = false, length = 20)
     private StatusOcorrencia status;
 
-    @Column(name = "linha_digitavel", length = 100)
+    @Column(name = "linha_digitavel", columnDefinition = "TEXT")
     private String linhaDigitavel;
 
-    @Column(length = 255)
+    @Column(columnDefinition = "TEXT")
     private String observacao;
 
     @ManyToOne(fetch = FetchType.LAZY)
