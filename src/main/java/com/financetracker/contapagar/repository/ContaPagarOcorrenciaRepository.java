@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
@@ -22,6 +23,11 @@ public interface ContaPagarOcorrenciaRepository extends JpaRepository<ContaPagar
     Optional<ContaPagarOcorrencia> findByTransacaoId(UUID transacaoId);
 
     List<ContaPagarOcorrencia> findByModeloIdOrderByMesReferenciaAsc(UUID modeloId);
+
+    List<ContaPagarOcorrencia> findByModeloIdIn(List<UUID> modeloIds);
+
+    @Query("SELECT o.transacao.id FROM ContaPagarOcorrencia o WHERE o.usuario.id = :usuarioId AND o.transacao IS NOT NULL")
+    Set<UUID> findTransacaoIdsVinculadasByUsuarioId(@Param("usuarioId") UUID usuarioId);
 
     List<ContaPagarOcorrencia> findByModeloIdAndStatusOrderByMesReferenciaDesc(UUID modeloId, StatusOcorrencia status);
 

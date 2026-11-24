@@ -13,6 +13,10 @@ public interface ContaPagarModeloRepository extends JpaRepository<ContaPagarMode
 
     List<ContaPagarModelo> findByUsuarioIdAndAtivoTrueOrderByNomeAsc(UUID usuarioId);
 
+    List<ContaPagarModelo> findByUsuarioIdAndFinanciamentoIdAndAtivoTrueOrderByNomeAsc(UUID usuarioId, UUID financiamentoId);
+
+    List<ContaPagarModelo> findByUsuarioIdAndFinanciamentoIsNullAndAtivoTrueOrderByNomeAsc(UUID usuarioId);
+
     List<ContaPagarModelo> findByAtivoTrue();
 
     Optional<ContaPagarModelo> findByIdAndUsuarioIdAndAtivoTrue(UUID id, UUID usuarioId);

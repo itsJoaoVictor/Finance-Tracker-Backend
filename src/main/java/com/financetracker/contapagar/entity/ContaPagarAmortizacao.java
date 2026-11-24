@@ -1,6 +1,7 @@
 package com.financetracker.contapagar.entity;
 
 import com.financetracker.conta.entity.Conta;
+import com.financetracker.contapagar.enums.DirecaoAbatimento;
 import com.financetracker.contapagar.enums.ModoAmortizacao;
 import com.financetracker.contapagar.enums.OrigemAmortizacao;
 import com.financetracker.transacao.entity.Transacao;
@@ -52,6 +53,16 @@ public class ContaPagarAmortizacao {
     @Column(name = "novo_valor_parcela", precision = 15, scale = 2)
     private BigDecimal novoValorParcela;
 
+    @Column(name = "valor_original_abatido", precision = 15, scale = 2)
+    private BigDecimal valorOriginalAbatido;
+
+    @Column(name = "desconto_obtido", precision = 15, scale = 2)
+    private BigDecimal descontoObtido;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "direcao_abatimento", nullable = false, length = 20)
+    private DirecaoAbatimento direcaoAbatimento = DirecaoAbatimento.ULTIMAS;
+
     @Column(length = 255)
     private String observacao;
 
@@ -91,6 +102,15 @@ public class ContaPagarAmortizacao {
 
     public BigDecimal getNovoValorParcela() { return novoValorParcela; }
     public void setNovoValorParcela(BigDecimal novoValorParcela) { this.novoValorParcela = novoValorParcela; }
+
+    public BigDecimal getValorOriginalAbatido() { return valorOriginalAbatido; }
+    public void setValorOriginalAbatido(BigDecimal valorOriginalAbatido) { this.valorOriginalAbatido = valorOriginalAbatido; }
+
+    public BigDecimal getDescontoObtido() { return descontoObtido; }
+    public void setDescontoObtido(BigDecimal descontoObtido) { this.descontoObtido = descontoObtido; }
+
+    public DirecaoAbatimento getDirecaoAbatimento() { return direcaoAbatimento; }
+    public void setDirecaoAbatimento(DirecaoAbatimento direcaoAbatimento) { this.direcaoAbatimento = direcaoAbatimento; }
 
     public String getObservacao() { return observacao; }
     public void setObservacao(String observacao) { this.observacao = observacao; }

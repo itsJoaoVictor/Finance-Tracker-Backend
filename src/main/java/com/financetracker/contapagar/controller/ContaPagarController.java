@@ -68,6 +68,13 @@ public class ContaPagarController {
         return ResponseEntity.ok(contaPagarService.amortizarFinanciamento(id, request));
     }
 
+    @PostMapping("/modelos/{id}/ajustar-prazo")
+    public ResponseEntity<FinanciamentoDetalheResponse> ajustarPrazo(
+            @PathVariable UUID id,
+            @Valid @RequestBody AjustarPrazoRequest request) {
+        return ResponseEntity.ok(contaPagarService.ajustarPrazoParcelamento(id, request));
+    }
+
     // ── Grade Mensal & Ocorrências ───────────────────────────────────────────
 
     @GetMapping("/grade")

@@ -3,6 +3,7 @@ package com.financetracker.contapagar.dto;
 import jakarta.validation.constraints.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 public record ContaPagarModeloCriacaoRequest(
@@ -42,5 +43,18 @@ public record ContaPagarModeloCriacaoRequest(
         String linhaDigitavel,
 
         @Size(max = 255)
-        String observacao
+        String observacao,
+
+        String modoParcelamento,
+
+        BigDecimal valorUltimaParcela,
+
+        @Min(1) @Max(60)
+        Integer intervaloMeses,
+
+        Boolean valoresEstimados,
+
+        List<BigDecimal> valoresParcelas,
+
+        UUID financiamentoId
 ) {}

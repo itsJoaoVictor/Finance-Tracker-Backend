@@ -2,6 +2,7 @@ package com.financetracker.contapagar.entity;
 
 import com.financetracker.categoria.entity.Categoria;
 import com.financetracker.conta.entity.Conta;
+import com.financetracker.contapagar.enums.ModoParcelamento;
 import com.financetracker.contapagar.enums.TipoContaPagar;
 import com.financetracker.usuario.entity.Usuario;
 import jakarta.persistence.*;
@@ -37,11 +38,28 @@ public class ContaPagarModelo {
     @Column(length = 50)
     private String agrupador;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "financiamento_id")
+    private Financiamento financiamento;
+
     @Column(name = "dia_vencimento", nullable = false)
     private Integer diaVencimento;
 
     @Column(name = "valor_padrao", precision = 15, scale = 2)
     private BigDecimal valorPadrao;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "modo_parcelamento", nullable = false, length = 20)
+    private ModoParcelamento modoParcelamento = ModoParcelamento.FIXO;
+
+    @Column(name = "valor_ultima_parcela", precision = 15, scale = 2)
+    private BigDecimal valorUltimaParcela;
+
+    @Column(name = "intervalo_meses", nullable = false)
+    private Integer intervaloMeses = 1;
+
+    @Column(name = "valores_estimados", nullable = false)
+    private Boolean valoresEstimados = false;
 
     @Column(name = "total_parcelas")
     private Integer totalParcelas;
@@ -86,11 +104,26 @@ public class ContaPagarModelo {
     public String getAgrupador() { return agrupador; }
     public void setAgrupador(String agrupador) { this.agrupador = agrupador; }
 
+    public Financiamento getFinanciamento() { return financiamento; }
+    public void setFinanciamento(Financiamento financiamento) { this.financiamento = financiamento; }
+
     public Integer getDiaVencimento() { return diaVencimento; }
     public void setDiaVencimento(Integer diaVencimento) { this.diaVencimento = diaVencimento; }
 
     public BigDecimal getValorPadrao() { return valorPadrao; }
     public void setValorPadrao(BigDecimal valorPadrao) { this.valorPadrao = valorPadrao; }
+
+    public ModoParcelamento getModoParcelamento() { return modoParcelamento; }
+    public void setModoParcelamento(ModoParcelamento modoParcelamento) { this.modoParcelamento = modoParcelamento; }
+
+    public BigDecimal getValorUltimaParcela() { return valorUltimaParcela; }
+    public void setValorUltimaParcela(BigDecimal valorUltimaParcela) { this.valorUltimaParcela = valorUltimaParcela; }
+
+    public Integer getIntervaloMeses() { return intervaloMeses; }
+    public void setIntervaloMeses(Integer intervaloMeses) { this.intervaloMeses = intervaloMeses; }
+
+    public Boolean getValoresEstimados() { return valoresEstimados; }
+    public void setValoresEstimados(Boolean valoresEstimados) { this.valoresEstimados = valoresEstimados; }
 
     public Integer getTotalParcelas() { return totalParcelas; }
     public void setTotalParcelas(Integer totalParcelas) { this.totalParcelas = totalParcelas; }

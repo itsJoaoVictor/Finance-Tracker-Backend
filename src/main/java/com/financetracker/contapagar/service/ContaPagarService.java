@@ -13,12 +13,15 @@ import com.financetracker.contapagar.dto.*;
 import com.financetracker.contapagar.entity.ContaPagarAmortizacao;
 import com.financetracker.contapagar.entity.ContaPagarModelo;
 import com.financetracker.contapagar.entity.ContaPagarOcorrencia;
+import com.financetracker.contapagar.entity.Financiamento;
 import com.financetracker.contapagar.enums.*;
 import com.financetracker.contapagar.exception.ContaPagarNaoEncontradaException;
 import com.financetracker.contapagar.repository.ContaPagarAmortizacaoRepository;
 import com.financetracker.contapagar.repository.ContaPagarModeloRepository;
 import com.financetracker.contapagar.repository.ContaPagarOcorrenciaRepository;
+import com.financetracker.contapagar.repository.FinanciamentoRepository;
 import com.financetracker.contapagar.util.DiaUtilUtils;
+import com.financetracker.contapagar.util.EstimadorParcelasUtils;
 import com.financetracker.ia.domain.IaInsight;
 import com.financetracker.ia.domain.TipoInsight;
 import com.financetracker.ia.repository.IaInsightRepository;
@@ -51,6 +54,7 @@ public class ContaPagarService {
     private final ContaPagarModeloRepository modeloRepository;
     private final ContaPagarOcorrenciaRepository ocorrenciaRepository;
     private final ContaPagarAmortizacaoRepository amortizacaoRepository;
+    private final FinanciamentoRepository financiamentoRepository;
     private final CategoriaRepository categoriaRepository;
     private final ContaRepository contaRepository;
     private final CartaoRepository cartaoRepository;
@@ -65,6 +69,7 @@ public class ContaPagarService {
     public ContaPagarService(ContaPagarModeloRepository modeloRepository,
                              ContaPagarOcorrenciaRepository ocorrenciaRepository,
                              ContaPagarAmortizacaoRepository amortizacaoRepository,
+                             FinanciamentoRepository financiamentoRepository,
                              CategoriaRepository categoriaRepository,
                              ContaRepository contaRepository,
                              CartaoRepository cartaoRepository,
@@ -76,6 +81,7 @@ public class ContaPagarService {
         this.modeloRepository = modeloRepository;
         this.ocorrenciaRepository = ocorrenciaRepository;
         this.amortizacaoRepository = amortizacaoRepository;
+        this.financiamentoRepository = financiamentoRepository;
         this.categoriaRepository = categoriaRepository;
         this.contaRepository = contaRepository;
         this.cartaoRepository = cartaoRepository;
@@ -132,22 +138,79 @@ public class ContaPagarService {
 
         int parcelaInicial = 1;
         int totalParcelas = 1;
+        int intervaloMeses = req.intervaloMeses() != null ? req.intervaloMeses() : 1;
+        ModoParcelamento modoParcelamento = ModoParcelamento.FIXO;
+        BigDecimal valorInicialModelo = req.valorPadrao();
+        BigDecimal valorUltimaModelo = req.valorUltimaParcela();
+        boolean valoresEstimados = Boolean.TRUE.equals(req.valoresEstimados());
+
+        if (intervaloMeses < 1 || intervaloMeses > 60) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Intervalo entre parcelas deve ser entre 1 e 60 meses.");
+        }
+
         if (tipo == TipoContaPagar.PARCELADO) {
             if (req.totalParcelas() == null || req.totalParcelas() < 1) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Total de parcelas é obrigatório para contas PARCELADAS.");
-            }
-            if (req.valorPadrao() == null || req.valorPadrao().compareTo(BigDecimal.ZERO) <= 0) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor estimado da parcela é obrigatório.");
             }
             totalParcelas = req.totalParcelas();
             parcelaInicial = req.parcelaInicial() != null && req.parcelaInicial() >= 1 ? req.parcelaInicial() : 1;
             if (parcelaInicial > totalParcelas) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Parcela inicial não pode ser maior que o total de parcelas.");
             }
+            int qtdRestante = totalParcelas - parcelaInicial + 1;
+
+            if (req.modoParcelamento() != null && !req.modoParcelamento().isBlank()) {
+                try {
+                    modoParcelamento = ModoParcelamento.valueOf(req.modoParcelamento().toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Modo de parcelamento inválido. Use FIXO, PROGRESSIVO ou PERSONALIZADO.");
+                }
+            }
+
+            if (modoParcelamento == ModoParcelamento.PERSONALIZADO) {
+                if (req.valoresParcelas() == null || req.valoresParcelas().size() != qtdRestante) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "No modo PERSONALIZADO, informe exatamente " + qtdRestante + " valor(es) de parcela.");
+                }
+                for (BigDecimal v : req.valoresParcelas()) {
+                    if (v == null || v.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Todos os valores das parcelas devem ser maiores que zero.");
+                    }
+                }
+                valorInicialModelo = req.valoresParcelas().get(0).setScale(2, RoundingMode.HALF_UP);
+                valorUltimaModelo = req.valoresParcelas().get(qtdRestante - 1).setScale(2, RoundingMode.HALF_UP);
+            } else if (modoParcelamento == ModoParcelamento.PROGRESSIVO) {
+                if (valorInicialModelo == null || valorInicialModelo.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor da parcela inicial/atual é obrigatório.");
+                }
+                if (qtdRestante == 1) {
+                    if (valorUltimaModelo == null) {
+                        valorUltimaModelo = valorInicialModelo;
+                    }
+                } else if (valorUltimaModelo == null || valorUltimaModelo.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor estimado da última parcela é obrigatório no modo PROGRESSIVO.");
+                }
+                validarOverridesParcelas(req.valoresParcelas(), qtdRestante);
+            } else {
+                if (valorInicialModelo == null || valorInicialModelo.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor estimado da parcela é obrigatório.");
+                }
+                valorUltimaModelo = null;
+                validarOverridesParcelas(req.valoresParcelas(), qtdRestante);
+            }
+        } else {
+            intervaloMeses = 1;
+            modoParcelamento = ModoParcelamento.FIXO;
+            valorUltimaModelo = null;
+            valoresEstimados = false;
         }
 
         Categoria categoria = findCategoriaDoUsuario(req.categoriaId(), usuario.getId());
         Conta contaPadrao = req.contaPadraoId() != null ? findContaDoUsuario(req.contaPadraoId(), usuario.getId()) : null;
+        Financiamento financiamento = req.financiamentoId() != null
+                ? financiamentoRepository.findByIdAndUsuarioIdAndAtivoTrue(req.financiamentoId(), usuario.getId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Financiamento não encontrado."))
+                : null;
 
         if (Boolean.TRUE.equals(req.debitoAutomatico()) && contaPadrao == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Conta padrão é obrigatória quando débito automático está ativo.");
@@ -161,8 +224,13 @@ public class ContaPagarService {
         modelo.setTipo(tipo);
         modelo.setCategoria(categoria);
         modelo.setAgrupador(req.agrupador() != null && !req.agrupador().isBlank() ? req.agrupador().trim() : null);
+        modelo.setFinanciamento(financiamento);
         modelo.setDiaVencimento(req.diaVencimento());
-        modelo.setValorPadrao(req.valorPadrao());
+        modelo.setValorPadrao(valorInicialModelo);
+        modelo.setModoParcelamento(modoParcelamento);
+        modelo.setValorUltimaParcela(valorUltimaModelo);
+        modelo.setIntervaloMeses(intervaloMeses);
+        modelo.setValoresEstimados(valoresEstimados);
         modelo.setDataInicio(mesInicio);
         modelo.setDebitoAutomatico(Boolean.TRUE.equals(req.debitoAutomatico()));
         modelo.setContaPadrao(contaPadrao);
@@ -172,7 +240,7 @@ public class ContaPagarService {
             modelo.setTotalParcelas(totalParcelas);
             modelo.setParcelaInicial(parcelaInicial);
             int qtdRestante = totalParcelas - parcelaInicial + 1;
-            modelo.setDataFim(mesInicio.plusMonths(qtdRestante - 1));
+            modelo.setDataFim(mesInicio.plusMonths((long) (qtdRestante - 1) * intervaloMeses));
         } else if (tipo == TipoContaPagar.AVULSO) {
             modelo.setTotalParcelas(1);
             modelo.setParcelaInicial(1);
@@ -185,7 +253,7 @@ public class ContaPagarService {
 
         // Geração inicial de ocorrências
         if (tipo == TipoContaPagar.PARCELADO) {
-            gerarTodasParcelas(saved);
+            gerarTodasParcelas(saved, req.valoresParcelas());
         } else if (tipo == TipoContaPagar.AVULSO) {
             ContaPagarOcorrencia unica = garantirOcorrenciaNoMes(saved, mesInicio);
             if (unica != null) {
@@ -229,6 +297,10 @@ public class ContaPagarService {
 
         Categoria categoria = findCategoriaDoUsuario(req.categoriaId(), usuario.getId());
         Conta contaPadrao = req.contaPadraoId() != null ? findContaDoUsuario(req.contaPadraoId(), usuario.getId()) : null;
+        Financiamento financiamento = req.financiamentoId() != null
+                ? financiamentoRepository.findByIdAndUsuarioIdAndAtivoTrue(req.financiamentoId(), usuario.getId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Financiamento não encontrado."))
+                : null;
 
         if (Boolean.TRUE.equals(req.debitoAutomatico()) && contaPadrao == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Conta padrão é obrigatória quando débito automático está ativo.");
@@ -237,12 +309,32 @@ public class ContaPagarService {
         modelo.setNome(req.nome().trim());
         modelo.setCategoria(categoria);
         modelo.setAgrupador(req.agrupador() != null && !req.agrupador().isBlank() ? req.agrupador().trim() : null);
+        modelo.setFinanciamento(financiamento);
         modelo.setDiaVencimento(req.diaVencimento());
         modelo.setValorPadrao(req.valorPadrao());
         modelo.setDebitoAutomatico(Boolean.TRUE.equals(req.debitoAutomatico()));
         modelo.setContaPadrao(contaPadrao);
 
-        if (modelo.getTipo() != TipoContaPagar.PARCELADO) {
+        if (modelo.getTipo() == TipoContaPagar.PARCELADO) {
+            if (req.modoParcelamento() != null && !req.modoParcelamento().isBlank()) {
+                try {
+                    modelo.setModoParcelamento(ModoParcelamento.valueOf(req.modoParcelamento().toUpperCase()));
+                } catch (IllegalArgumentException e) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Modo de parcelamento inválido. Use FIXO, PROGRESSIVO ou PERSONALIZADO.");
+                }
+            }
+            if (req.valorUltimaParcela() != null) {
+                if (req.valorUltimaParcela().compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Valor da última parcela deve ser maior que zero.");
+                }
+                modelo.setValorUltimaParcela(req.valorUltimaParcela());
+            } else if (modelo.getModoParcelamento() == ModoParcelamento.FIXO) {
+                modelo.setValorUltimaParcela(null);
+            }
+            if (req.valoresEstimados() != null) {
+                modelo.setValoresEstimados(req.valoresEstimados());
+            }
+        } else {
             LocalDate novaDataFim = req.dataFim() != null ? req.dataFim().withDayOfMonth(1) : null;
             modelo.setDataFim(novaDataFim);
             if (novaDataFim != null) {
@@ -257,14 +349,47 @@ public class ContaPagarService {
             }
         }
 
-        if (Boolean.TRUE.equals(req.aplicarValorOcorrenciasFuturas()) && req.valorPadrao() != null) {
+        if (Boolean.TRUE.equals(req.aplicarValorOcorrenciasFuturas())) {
             LocalDate mesAtual = DiaUtilUtils.hoje().withDayOfMonth(1);
             List<ContaPagarOcorrencia> ocorrencias = ocorrenciaRepository.findByModeloIdOrderByMesReferenciaAsc(modelo.getId());
-            for (ContaPagarOcorrencia o : ocorrencias) {
-                if (!o.getMesReferencia().isBefore(mesAtual) && o.getStatus() == StatusOcorrencia.PENDENTE) {
-                    o.setValorReal(req.valorPadrao());
-                    o.setValorEstimado(req.valorPadrao());
-                    ocorrenciaRepository.save(o);
+
+            if (modelo.getTipo() == TipoContaPagar.PARCELADO) {
+                List<ContaPagarOcorrencia> abertasFuturas = ocorrencias.stream()
+                        .filter(o -> !o.getMesReferencia().isBefore(mesAtual)
+                                && (o.getStatus() == StatusOcorrencia.PENDENTE || o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR))
+                        .toList();
+
+                boolean somenteEstimado = Boolean.TRUE.equals(modelo.getValoresEstimados());
+                int qtdAbertas = abertasFuturas.size();
+                ModoParcelamento modoAtual = modelo.getModoParcelamento() != null ? modelo.getModoParcelamento() : ModoParcelamento.FIXO;
+
+                if (modoAtual == ModoParcelamento.PROGRESSIVO) {
+                    if (modelo.getValorPadrao() == null || modelo.getValorPadrao().compareTo(BigDecimal.ZERO) <= 0
+                            || (qtdAbertas > 1 && (modelo.getValorUltimaParcela() == null || modelo.getValorUltimaParcela().compareTo(BigDecimal.ZERO) <= 0))) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "Informe o valor da parcela atual e da última parcela para recalcular a curva progressiva.");
+                    }
+                    for (int i = 0; i < qtdAbertas; i++) {
+                        ContaPagarOcorrencia o = abertasFuturas.get(i);
+                        BigDecimal valorCalculado = calcularValorParcelaProgressiva(
+                                modelo.getValorPadrao(), modelo.getValorUltimaParcela(), i, qtdAbertas);
+                        aplicarValorOcorrenciaParcelada(o, valorCalculado, somenteEstimado);
+                        ocorrenciaRepository.save(o);
+                    }
+                } else if (req.valorPadrao() != null && req.valorPadrao().compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal valorFixo = req.valorPadrao().setScale(2, RoundingMode.HALF_UP);
+                    for (ContaPagarOcorrencia o : abertasFuturas) {
+                        aplicarValorOcorrenciaParcelada(o, valorFixo, somenteEstimado);
+                        ocorrenciaRepository.save(o);
+                    }
+                }
+            } else if (req.valorPadrao() != null) {
+                for (ContaPagarOcorrencia o : ocorrencias) {
+                    if (!o.getMesReferencia().isBefore(mesAtual) && o.getStatus() == StatusOcorrencia.PENDENTE) {
+                        o.setValorReal(req.valorPadrao());
+                        o.setValorEstimado(req.valorPadrao());
+                        ocorrenciaRepository.save(o);
+                    }
                 }
             }
         }
@@ -294,26 +419,83 @@ public class ContaPagarService {
     // GERAÇÃO DE OCORRÊNCIAS
     // ═══════════════════════════════════════════════════════════════════
 
-    private void gerarTodasParcelas(ContaPagarModelo modelo) {
+    private void validarOverridesParcelas(List<BigDecimal> valoresParcelas, int qtdRestante) {
+        if (valoresParcelas == null || valoresParcelas.isEmpty()) {
+            return;
+        }
+        if (valoresParcelas.size() > qtdRestante) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A lista de valores customizados possui mais itens que o número de parcelas restantes (" + qtdRestante + ").");
+        }
+        for (BigDecimal v : valoresParcelas) {
+            if (v != null && v.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Todos os valores customizados das parcelas devem ser maiores que zero.");
+            }
+        }
+    }
+
+    public static BigDecimal calcularValorParcelaProgressiva(
+            BigDecimal valorInicial, BigDecimal valorFinal, int indice, int quantidadeTotal) {
+        if (quantidadeTotal <= 1 || valorFinal == null) {
+            return valorInicial.setScale(2, RoundingMode.HALF_UP);
+        }
+        if (indice <= 0) {
+            return valorInicial.setScale(2, RoundingMode.HALF_UP);
+        }
+        if (indice >= quantidadeTotal - 1) {
+            return valorFinal.setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal diferenca = valorFinal.subtract(valorInicial);
+        BigDecimal proporcao = BigDecimal.valueOf(indice)
+                .divide(BigDecimal.valueOf(quantidadeTotal - 1), 10, RoundingMode.HALF_UP);
+        return valorInicial.add(diferenca.multiply(proporcao)).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private void aplicarValorOcorrenciaParcelada(ContaPagarOcorrencia o, BigDecimal valor, boolean somenteEstimado) {
+        o.setValorEstimado(valor);
+        if (somenteEstimado) {
+            o.setValorReal(null);
+            o.setStatus(StatusOcorrencia.AGUARDANDO_VALOR);
+        } else {
+            o.setValorReal(valor);
+            o.setStatus(StatusOcorrencia.PENDENTE);
+        }
+    }
+
+    private void gerarTodasParcelas(ContaPagarModelo modelo, List<BigDecimal> valoresCustomizados) {
         int inicio = modelo.getParcelaInicial() != null ? modelo.getParcelaInicial() : 1;
         int total = modelo.getTotalParcelas() != null ? modelo.getTotalParcelas() : 1;
+        int qtdRestante = total - inicio + 1;
+        int intervalo = modelo.getIntervaloMeses() != null && modelo.getIntervaloMeses() >= 1 ? modelo.getIntervaloMeses() : 1;
+        ModoParcelamento modo = modelo.getModoParcelamento() != null ? modelo.getModoParcelamento() : ModoParcelamento.FIXO;
+        boolean somenteEstimado = Boolean.TRUE.equals(modelo.getValoresEstimados());
         LocalDate mesBase = modelo.getDataInicio().withDayOfMonth(1);
 
         for (int p = inicio; p <= total; p++) {
             int offset = p - inicio;
-            LocalDate mesRef = mesBase.plusMonths(offset);
+            LocalDate mesRef = mesBase.plusMonths((long) offset * intervalo);
             if (ocorrenciaRepository.findByModeloIdAndMesReferencia(modelo.getId(), mesRef).isPresent()) {
                 continue;
             }
+
+            BigDecimal valorParcela;
+            if (valoresCustomizados != null && offset < valoresCustomizados.size() && valoresCustomizados.get(offset) != null) {
+                valorParcela = valoresCustomizados.get(offset).setScale(2, RoundingMode.HALF_UP);
+            } else if (modo == ModoParcelamento.PROGRESSIVO) {
+                valorParcela = calcularValorParcelaProgressiva(
+                        modelo.getValorPadrao(), modelo.getValorUltimaParcela(), offset, qtdRestante);
+            } else {
+                valorParcela = modelo.getValorPadrao().setScale(2, RoundingMode.HALF_UP);
+            }
+
             ContaPagarOcorrencia o = new ContaPagarOcorrencia();
             o.setUsuario(modelo.getUsuario());
             o.setModelo(modelo);
             o.setMesReferencia(mesRef);
             o.setNumeroParcela(p);
             o.setDataVencimento(DiaUtilUtils.calcularDataVencimento(mesRef, modelo.getDiaVencimento()));
-            o.setValorEstimado(modelo.getValorPadrao());
-            o.setValorReal(modelo.getValorPadrao());
-            o.setStatus(StatusOcorrencia.PENDENTE);
+            aplicarValorOcorrenciaParcelada(o, valorParcela, somenteEstimado);
             ocorrenciaRepository.save(o);
         }
     }
@@ -528,7 +710,12 @@ public class ContaPagarService {
             verificarContaAcimaDaMedia(o);
         }
 
-        return new ContaPagarOcorrenciaResponse(ocorrenciaRepository.save(o));
+        ContaPagarOcorrencia saved = ocorrenciaRepository.save(o);
+        if (req.valorReal() != null) {
+            recalibrarParcelasFuturasPorHistorico(saved.getModelo());
+        }
+
+        return new ContaPagarOcorrenciaResponse(saved);
     }
 
     @Transactional
@@ -651,7 +838,7 @@ public class ContaPagarService {
 
         ContaPagarOcorrencia saved = ocorrenciaRepository.save(o);
 
-        // Atualizar estimativa de ocorrências futuras AGUARDANDO_VALOR para contas variáveis
+        // Atualizar estimativa de ocorrências futuras AGUARDANDO_VALOR
         if (modelo.getTipo() == TipoContaPagar.VARIAVEL) {
             BigDecimal novaMedia = calcularMediaUltimos3Pagos(modelo);
             List<ContaPagarOcorrencia> futuras = ocorrenciaRepository
@@ -660,9 +847,83 @@ public class ContaPagarService {
                 f.setValorEstimado(novaMedia);
                 ocorrenciaRepository.save(f);
             }
+        } else if (modelo.getTipo() == TipoContaPagar.PARCELADO) {
+            recalibrarParcelasFuturasPorHistorico(modelo);
         }
 
         return new ContaPagarOcorrenciaResponse(saved);
+    }
+
+    /**
+     * Recalibra matematicamente o valorEstimado das parcelas futuras ainda em AGUARDANDO_VALOR
+     * usando o histórico real de parcelas já pagas ou com valorReal confirmado.
+     * Atua apenas em modelos PARCELADO com valoresEstimados = true e modo FIXO ou PROGRESSIVO.
+     */
+    public void recalibrarParcelasFuturasPorHistorico(ContaPagarModelo modelo) {
+        if (modelo == null
+                || modelo.getTipo() != TipoContaPagar.PARCELADO
+                || !Boolean.TRUE.equals(modelo.getValoresEstimados())) {
+            return;
+        }
+        ModoParcelamento modo = modelo.getModoParcelamento() != null
+                ? modelo.getModoParcelamento()
+                : ModoParcelamento.FIXO;
+        if (modo == ModoParcelamento.PERSONALIZADO) {
+            return;
+        }
+
+        List<ContaPagarOcorrencia> todas = ocorrenciaRepository.findByModeloIdOrderByMesReferenciaAsc(modelo.getId());
+        if (todas == null || todas.isEmpty()) {
+            return;
+        }
+
+        List<BigDecimal> historicoValores = new ArrayList<>();
+        LocalDate ultimoMesHistorico = null;
+        for (ContaPagarOcorrencia oc : todas) {
+            BigDecimal valorObservado = null;
+            if (oc.getStatus() == StatusOcorrencia.PAGA) {
+                // Prioriza valorReal para evitar que eventual multa por atraso distorça parcelas futuras
+                valorObservado = oc.getValorReal() != null ? oc.getValorReal() : oc.getValorPago();
+            } else if (oc.getStatus() == StatusOcorrencia.PENDENTE && oc.getValorReal() != null) {
+                valorObservado = oc.getValorReal();
+            }
+            if (valorObservado != null && valorObservado.compareTo(BigDecimal.ZERO) > 0) {
+                historicoValores.add(valorObservado);
+                ultimoMesHistorico = oc.getMesReferencia();
+            }
+        }
+
+        if (historicoValores.isEmpty() || ultimoMesHistorico == null) {
+            return;
+        }
+
+        final LocalDate corte = ultimoMesHistorico;
+        List<ContaPagarOcorrencia> futurasAguardando = todas.stream()
+                .filter(oc -> oc.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR
+                        && oc.getMesReferencia() != null
+                        && oc.getMesReferencia().isAfter(corte))
+                .toList();
+
+        if (futurasAguardando.isEmpty()) {
+            return;
+        }
+
+        List<BigDecimal> novasEstimativas = EstimadorParcelasUtils.projetarParcelasFuturas(
+                modo,
+                modelo.getValorPadrao(),
+                modelo.getValorUltimaParcela(),
+                historicoValores,
+                futurasAguardando.size()
+        );
+
+        for (int i = 0; i < futurasAguardando.size(); i++) {
+            ContaPagarOcorrencia futura = futurasAguardando.get(i);
+            BigDecimal nova = novasEstimativas.get(i);
+            if (futura.getValorEstimado() == null || futura.getValorEstimado().compareTo(nova) != 0) {
+                futura.setValorEstimado(nova);
+                ocorrenciaRepository.save(futura);
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -706,6 +967,13 @@ public class ContaPagarService {
                 .map(ContaPagarAmortizacao::getValor)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        BigDecimal totalDescontoObtido = amortizacoes.stream()
+                .map(ContaPagarAmortizacao::getDescontoObtido)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        boolean concluido = restantes == 0;
+
         return new FinanciamentoDetalheResponse(
                 new ContaPagarModeloResponse(modelo),
                 pagas + anterioresForaDoApp,
@@ -715,7 +983,9 @@ public class ContaPagarService {
                 totalAmortizacoes,
                 totalPagoParcelas.add(totalAmortizacoes),
                 totalJuros,
+                totalDescontoObtido,
                 totalRestanteEstimado,
+                concluido,
                 ocorrencias.stream().map(ContaPagarOcorrenciaResponse::new).toList(),
                 amortizacoes.stream().map(FinanciamentoDetalheResponse.AmortizacaoItem::new).toList()
         );
@@ -733,11 +1003,42 @@ public class ContaPagarService {
 
         OrigemAmortizacao origem;
         ModoAmortizacao modo;
+        DirecaoAbatimento direcao = DirecaoAbatimento.ULTIMAS;
         try {
             origem = OrigemAmortizacao.valueOf(req.origem().toUpperCase());
             modo = ModoAmortizacao.valueOf(req.modo().toUpperCase());
+            if (req.direcaoAbatimento() != null && !req.direcaoAbatimento().isBlank()) {
+                direcao = DirecaoAbatimento.valueOf(req.direcaoAbatimento().toUpperCase());
+            }
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Origem ou modo de amortização inválido.");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Origem, modo ou direção de amortização inválido.");
+        }
+
+        if (req.descontoObtido() != null && req.descontoObtido().compareTo(BigDecimal.ZERO) < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Desconto obtido não pode ser negativo.");
+        }
+
+        List<ContaPagarOcorrencia> todas = ocorrenciaRepository.findByModeloIdOrderByMesReferenciaAsc(modeloId);
+        List<ContaPagarOcorrencia> abertas = todas.stream()
+                .filter(o -> o.getStatus() == StatusOcorrencia.PENDENTE || o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR)
+                .toList();
+
+        if (abertas.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Este financiamento não possui parcelas em aberto para amortizar.");
+        }
+
+        // Validar parâmetros antes de debitar conta
+        int eliminar = 0;
+        if (modo == ModoAmortizacao.REDUZIR_PRAZO) {
+            eliminar = req.parcelasEliminadas() != null ? req.parcelasEliminadas() : 0;
+            if (eliminar <= 0 || eliminar > abertas.size()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Informe uma quantidade válida de parcelas eliminadas (máx: " + abertas.size() + ").");
+            }
+        } else {
+            if (req.novoValorParcela() == null || req.novoValorParcela().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Informe o novo valor estimado da parcela.");
+            }
         }
 
         Conta conta = null;
@@ -766,49 +1067,60 @@ public class ContaPagarService {
             transacao = transacaoRepository.save(t);
         }
 
-        List<ContaPagarOcorrencia> todas = ocorrenciaRepository.findByModeloIdOrderByMesReferenciaAsc(modeloId);
-        List<ContaPagarOcorrencia> abertas = todas.stream()
-                .filter(o -> o.getStatus() == StatusOcorrencia.PENDENTE || o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR)
-                .toList();
+        boolean somenteEstimado = Boolean.TRUE.equals(modelo.getValoresEstimados());
+        BigDecimal valorOriginalAbatido;
 
         if (modo == ModoAmortizacao.REDUZIR_PRAZO) {
-            int eliminar = req.parcelasEliminadas() != null ? req.parcelasEliminadas() : 0;
-            if (eliminar <= 0 || eliminar > abertas.size()) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Informe uma quantidade válida de parcelas eliminadas (máx: " + abertas.size() + ").");
+            List<ContaPagarOcorrencia> alvos;
+            List<ContaPagarOcorrencia> restantesApos;
+            if (direcao == DirecaoAbatimento.PROXIMAS) {
+                alvos = abertas.subList(0, eliminar);
+                restantesApos = abertas.subList(eliminar, abertas.size());
+            } else {
+                alvos = abertas.subList(abertas.size() - eliminar, abertas.size());
+                restantesApos = abertas.subList(0, abertas.size() - eliminar);
             }
-            // Cancelar as últimas N ocorrências futuras
-            for (int i = 0; i < eliminar; i++) {
-                ContaPagarOcorrencia alvo = abertas.get(abertas.size() - 1 - i);
+
+            valorOriginalAbatido = BigDecimal.ZERO;
+            String sufixoDirecao = direcao == DirecaoAbatimento.PROXIMAS ? " (antecipação)" : "";
+            for (ContaPagarOcorrencia alvo : alvos) {
+                valorOriginalAbatido = valorOriginalAbatido.add(alvo.getValorEfetivo());
                 alvo.setStatus(StatusOcorrencia.CANCELADA);
-                alvo.setObservacao("Eliminada por amortização extra em " + req.data());
+                alvo.setObservacao("Abatida por amortização extra em " + req.data() + sufixoDirecao);
                 ocorrenciaRepository.save(alvo);
             }
+
             if (modelo.getTotalParcelas() != null) {
-                modelo.setTotalParcelas(Math.max(1, modelo.getTotalParcelas() - eliminar));
+                modelo.setTotalParcelas(Math.max(0, modelo.getTotalParcelas() - eliminar));
             }
+            atualizarDataFimModelo(modelo, todas, restantesApos);
+
             if (req.novoValorParcela() != null && req.novoValorParcela().compareTo(BigDecimal.ZERO) > 0) {
-                modelo.setValorPadrao(req.novoValorParcela());
-                for (int i = 0; i < abertas.size() - eliminar; i++) {
-                    ContaPagarOcorrencia rest = abertas.get(i);
-                    rest.setValorEstimado(req.novoValorParcela());
-                    rest.setValorReal(req.novoValorParcela());
-                    ocorrenciaRepository.save(rest);
-                }
+                atualizarValoresParcelasRestantes(modelo, restantesApos, req.novoValorParcela(), req.novoValorUltimaParcela(), somenteEstimado);
+            } else if (!restantesApos.isEmpty()
+                    && modelo.getModoParcelamento() == ModoParcelamento.PROGRESSIVO
+                    && direcao == DirecaoAbatimento.ULTIMAS) {
+                // Nova última parcela ativa passa a ser a referência final do contrato
+                modelo.setValorUltimaParcela(restantesApos.get(restantesApos.size() - 1).getValorEfetivo());
             }
             modeloRepository.save(modelo);
         } else {
-            if (req.novoValorParcela() == null || req.novoValorParcela().compareTo(BigDecimal.ZERO) <= 0) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Informe o novo valor estimado da parcela.");
-            }
-            modelo.setValorPadrao(req.novoValorParcela());
+            BigDecimal restanteAntes = abertas.stream()
+                    .map(ContaPagarOcorrencia::getValorEfetivo)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            atualizarValoresParcelasRestantes(modelo, abertas, req.novoValorParcela(), req.novoValorUltimaParcela(), somenteEstimado);
             modeloRepository.save(modelo);
-            for (ContaPagarOcorrencia o : abertas) {
-                o.setValorEstimado(req.novoValorParcela());
-                o.setValorReal(req.novoValorParcela());
-                ocorrenciaRepository.save(o);
-            }
+
+            BigDecimal restanteDepois = abertas.stream()
+                    .map(ContaPagarOcorrencia::getValorEfetivo)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            valorOriginalAbatido = restanteAntes.subtract(restanteDepois).max(BigDecimal.ZERO);
         }
+
+        BigDecimal descontoObtido = req.descontoObtido() != null
+                ? req.descontoObtido().setScale(2, RoundingMode.HALF_UP)
+                : valorOriginalAbatido.subtract(req.valor()).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
 
         ContaPagarAmortizacao amort = new ContaPagarAmortizacao();
         amort.setUsuario(usuario);
@@ -818,13 +1130,231 @@ public class ContaPagarService {
         amort.setOrigem(origem);
         amort.setConta(conta);
         amort.setModo(modo);
-        amort.setParcelasEliminadas(req.parcelasEliminadas());
+        amort.setDirecaoAbatimento(direcao);
+        amort.setParcelasEliminadas(modo == ModoAmortizacao.REDUZIR_PRAZO ? eliminar : null);
         amort.setNovoValorParcela(req.novoValorParcela());
+        amort.setValorOriginalAbatido(valorOriginalAbatido.setScale(2, RoundingMode.HALF_UP));
+        amort.setDescontoObtido(descontoObtido);
         amort.setObservacao(req.observacao());
         amort.setTransacao(transacao);
         amortizacaoRepository.save(amort);
 
         return obterDetalheFinanciamento(modeloId);
+    }
+
+    @Transactional
+    public FinanciamentoDetalheResponse ajustarPrazoParcelamento(UUID modeloId, AjustarPrazoRequest req) {
+        Usuario usuario = getAuthenticatedUsuario();
+        ContaPagarModelo modelo = modeloRepository.findByIdAndUsuarioIdAndAtivoTrue(modeloId, usuario.getId())
+                .orElseThrow(ContaPagarNaoEncontradaException::new);
+
+        if (modelo.getTipo() != TipoContaPagar.PARCELADO) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Ajuste de prazo só é permitido para contas PARCELADAS.");
+        }
+
+        String acao = req.acao().trim().toUpperCase();
+        String motivo = (req.motivo() != null && !req.motivo().isBlank()) ? req.motivo().trim() : null;
+
+        List<ContaPagarOcorrencia> todas = ocorrenciaRepository.findByModeloIdOrderByMesReferenciaAsc(modeloId);
+        List<ContaPagarOcorrencia> abertas = todas.stream()
+                .filter(o -> o.getStatus() == StatusOcorrencia.PENDENTE || o.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR)
+                .toList();
+
+        if ("ENCERRAR".equals(acao)) {
+            if (abertas.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Este contrato já não possui parcelas em aberto.");
+            }
+            String obs = motivo != null ? "Encerrado antecipadamente: " + motivo : "Encerrado antecipadamente";
+            for (ContaPagarOcorrencia o : abertas) {
+                o.setStatus(StatusOcorrencia.CANCELADA);
+                o.setObservacao(obs);
+                ocorrenciaRepository.save(o);
+            }
+            if (modelo.getTotalParcelas() != null) {
+                modelo.setTotalParcelas(Math.max(0, modelo.getTotalParcelas() - abertas.size()));
+            }
+            atualizarDataFimModelo(modelo, todas, List.of());
+            modeloRepository.save(modelo);
+        } else if ("REDUZIR".equals(acao)) {
+            int qtd = req.quantidadeParcelas() != null ? req.quantidadeParcelas() : 0;
+            if (qtd <= 0 || qtd > abertas.size()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Informe uma quantidade válida de parcelas para reduzir (máx: " + abertas.size() + ").");
+            }
+            String obs = motivo != null ? "Prazo reduzido: " + motivo : "Prazo reduzido antecipadamente";
+            List<ContaPagarOcorrencia> alvos = abertas.subList(abertas.size() - qtd, abertas.size());
+            List<ContaPagarOcorrencia> restantes = abertas.subList(0, abertas.size() - qtd);
+            for (ContaPagarOcorrencia alvo : alvos) {
+                alvo.setStatus(StatusOcorrencia.CANCELADA);
+                alvo.setObservacao(obs);
+                ocorrenciaRepository.save(alvo);
+            }
+            if (modelo.getTotalParcelas() != null) {
+                modelo.setTotalParcelas(Math.max(0, modelo.getTotalParcelas() - qtd));
+            }
+            atualizarDataFimModelo(modelo, todas, restantes);
+            modeloRepository.save(modelo);
+
+            // Se for PROGRESSIVO estimado (ex.: Taxa de Obra adiantou), recalibrar as parcelas restantes
+            if (!restantes.isEmpty()
+                    && Boolean.TRUE.equals(modelo.getValoresEstimados())
+                    && modelo.getModoParcelamento() == ModoParcelamento.PROGRESSIVO) {
+                boolean temHistorico = todas.stream().anyMatch(oc ->
+                        oc.getStatus() == StatusOcorrencia.PAGA
+                                || (oc.getStatus() == StatusOcorrencia.PENDENTE && oc.getValorReal() != null));
+                if (temHistorico) {
+                    recalibrarParcelasFuturasPorHistorico(modelo);
+                } else if (modelo.getValorPadrao() != null && modelo.getValorUltimaParcela() != null) {
+                    for (int i = 0; i < restantes.size(); i++) {
+                        ContaPagarOcorrencia r = restantes.get(i);
+                        if (r.getStatus() == StatusOcorrencia.AGUARDANDO_VALOR) {
+                            BigDecimal v = calcularValorParcelaProgressiva(
+                                    modelo.getValorPadrao(), modelo.getValorUltimaParcela(), i, restantes.size());
+                            r.setValorEstimado(v);
+                            ocorrenciaRepository.save(r);
+                        }
+                    }
+                }
+            }
+        } else if ("ESTENDER".equals(acao)) {
+            int qtd = req.quantidadeParcelas() != null ? req.quantidadeParcelas() : 0;
+            if (qtd <= 0 || qtd > 120) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Informe entre 1 e 120 parcelas para estender o prazo.");
+            }
+            int intervalo = modelo.getIntervaloMeses() != null && modelo.getIntervaloMeses() >= 1
+                    ? modelo.getIntervaloMeses() : 1;
+            boolean somenteEstimado = Boolean.TRUE.equals(modelo.getValoresEstimados());
+
+            // Determinar valor base das novas parcelas
+            BigDecimal valorAdicional = req.valorParcelasAdicionadas();
+            if (valorAdicional == null || valorAdicional.compareTo(BigDecimal.ZERO) <= 0) {
+                if (!abertas.isEmpty()) {
+                    valorAdicional = abertas.get(abertas.size() - 1).getValorEfetivo();
+                } else if (modelo.getValorUltimaParcela() != null && modelo.getValorUltimaParcela().compareTo(BigDecimal.ZERO) > 0) {
+                    valorAdicional = modelo.getValorUltimaParcela();
+                } else if (modelo.getValorPadrao() != null && modelo.getValorPadrao().compareTo(BigDecimal.ZERO) > 0) {
+                    valorAdicional = modelo.getValorPadrao();
+                } else {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "Informe o valor estimado das parcelas adicionadas.");
+                }
+            }
+            valorAdicional = valorAdicional.setScale(2, RoundingMode.HALF_UP);
+
+            // Último mês ativo (PAGA, PENDENTE ou AGUARDANDO_VALOR)
+            LocalDate ultimoMesAtivo = todas.stream()
+                    .filter(o -> o.getStatus() != StatusOcorrencia.CANCELADA)
+                    .map(ContaPagarOcorrencia::getMesReferencia)
+                    .max(Comparator.naturalOrder())
+                    .orElse(null);
+
+            int ultimaParcelaAtivaNum = todas.stream()
+                    .filter(o -> o.getStatus() != StatusOcorrencia.CANCELADA && o.getNumeroParcela() != null)
+                    .mapToInt(ContaPagarOcorrencia::getNumeroParcela)
+                    .max()
+                    .orElse(modelo.getTotalParcelas() != null ? modelo.getTotalParcelas() : 0);
+
+            // 1. Reativar eventuais parcelas CANCELADAS posteriores ao último mês ativo (evita conflito de UNIQUE modelo_id+mes_referencia)
+            List<ContaPagarOcorrencia> canceladasPosteriores = todas.stream()
+                    .filter(o -> o.getStatus() == StatusOcorrencia.CANCELADA
+                            && (ultimoMesAtivo == null || o.getMesReferencia().isAfter(ultimoMesAtivo)))
+                    .toList();
+
+            int adicionadas = 0;
+            LocalDate novoDataFim = ultimoMesAtivo != null ? ultimoMesAtivo : modelo.getDataInicio().withDayOfMonth(1);
+            String obsExtensao = motivo != null ? "Prazo estendido: " + motivo : "Prazo estendido";
+
+            for (ContaPagarOcorrencia canc : canceladasPosteriores) {
+                if (adicionadas >= qtd) break;
+                adicionadas++;
+                ultimaParcelaAtivaNum++;
+                canc.setNumeroParcela(ultimaParcelaAtivaNum);
+                aplicarValorOcorrenciaParcelada(canc, valorAdicional, somenteEstimado);
+                canc.setObservacao(obsExtensao);
+                ocorrenciaRepository.save(canc);
+                if (canc.getMesReferencia().isAfter(novoDataFim)) {
+                    novoDataFim = canc.getMesReferencia();
+                }
+            }
+
+            // 2. Criar novas ocorrências além da maior data existente
+            LocalDate maiorMesExistente = todas.stream()
+                    .map(ContaPagarOcorrencia::getMesReferencia)
+                    .max(Comparator.naturalOrder())
+                    .orElse(modelo.getDataInicio().withDayOfMonth(1).minusMonths(intervalo));
+
+            while (adicionadas < qtd) {
+                adicionadas++;
+                ultimaParcelaAtivaNum++;
+                maiorMesExistente = maiorMesExistente.plusMonths(intervalo);
+
+                ContaPagarOcorrencia nova = new ContaPagarOcorrencia();
+                nova.setUsuario(modelo.getUsuario());
+                nova.setModelo(modelo);
+                nova.setMesReferencia(maiorMesExistente);
+                nova.setNumeroParcela(ultimaParcelaAtivaNum);
+                nova.setDataVencimento(DiaUtilUtils.calcularDataVencimento(maiorMesExistente, modelo.getDiaVencimento()));
+                aplicarValorOcorrenciaParcelada(nova, valorAdicional, somenteEstimado);
+                nova.setObservacao(obsExtensao);
+                ocorrenciaRepository.save(nova);
+                novoDataFim = maiorMesExistente;
+            }
+
+            int totalAnterior = modelo.getTotalParcelas() != null ? modelo.getTotalParcelas() : 0;
+            modelo.setTotalParcelas(totalAnterior + qtd);
+            modelo.setDataFim(novoDataFim);
+            modeloRepository.save(modelo);
+        } else {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Ação inválida. Use ENCERRAR, REDUZIR ou ESTENDER.");
+        }
+
+        return obterDetalheFinanciamento(modeloId);
+    }
+
+    private void atualizarDataFimModelo(
+            ContaPagarModelo modelo,
+            List<ContaPagarOcorrencia> todas,
+            List<ContaPagarOcorrencia> restantesApos) {
+        if (!restantesApos.isEmpty()) {
+            modelo.setDataFim(restantesApos.get(restantesApos.size() - 1).getMesReferencia());
+        } else {
+            LocalDate ultimoMesPago = todas.stream()
+                    .filter(o -> o.getStatus() == StatusOcorrencia.PAGA)
+                    .map(ContaPagarOcorrencia::getMesReferencia)
+                    .max(Comparator.naturalOrder())
+                    .orElse(modelo.getDataInicio());
+            modelo.setDataFim(ultimoMesPago);
+        }
+    }
+
+    private void atualizarValoresParcelasRestantes(
+            ContaPagarModelo modelo,
+            List<ContaPagarOcorrencia> restantes,
+            BigDecimal novoValorInicial,
+            BigDecimal novoValorUltima,
+            boolean somenteEstimado) {
+        modelo.setValorPadrao(novoValorInicial.setScale(2, RoundingMode.HALF_UP));
+        if (restantes.isEmpty()) {
+            return;
+        }
+        boolean usarCurva = modelo.getModoParcelamento() == ModoParcelamento.PROGRESSIVO
+                && (novoValorUltima != null && novoValorUltima.compareTo(BigDecimal.ZERO) > 0);
+        if (usarCurva) {
+            modelo.setValorUltimaParcela(novoValorUltima.setScale(2, RoundingMode.HALF_UP));
+            for (int i = 0; i < restantes.size(); i++) {
+                BigDecimal v = calcularValorParcelaProgressiva(novoValorInicial, novoValorUltima, i, restantes.size());
+                aplicarValorOcorrenciaParcelada(restantes.get(i), v, somenteEstimado);
+                ocorrenciaRepository.save(restantes.get(i));
+            }
+        } else {
+            BigDecimal valorFixo = novoValorInicial.setScale(2, RoundingMode.HALF_UP);
+            for (ContaPagarOcorrencia o : restantes) {
+                aplicarValorOcorrenciaParcelada(o, valorFixo, somenteEstimado);
+                ocorrenciaRepository.save(o);
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

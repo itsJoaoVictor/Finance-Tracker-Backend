@@ -28,5 +28,11 @@ public record AmortizarRequest(
 
         BigDecimal novoValorParcela,
 
-        String observacao
+        String observacao,
+
+        String direcaoAbatimento,
+
+        BigDecimal descontoObtido,
+
+        BigDecimal novoValorUltimaParcela
 ) {}

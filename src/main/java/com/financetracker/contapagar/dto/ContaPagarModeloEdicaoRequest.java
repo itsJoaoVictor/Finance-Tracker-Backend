@@ -28,5 +28,13 @@ public record ContaPagarModeloEdicaoRequest(
 
         UUID contaPadraoId,
 
-        Boolean aplicarValorOcorrenciasFuturas
+        Boolean aplicarValorOcorrenciasFuturas,
+
+        String modoParcelamento,
+
+        BigDecimal valorUltimaParcela,
+
+        Boolean valoresEstimados,
+
+        UUID financiamentoId
 ) {}
