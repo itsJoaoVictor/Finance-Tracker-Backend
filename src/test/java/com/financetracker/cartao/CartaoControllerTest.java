@@ -9,6 +9,10 @@ import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.model.TipoConta;
 import com.financetracker.conta.repository.ContaRepository;
 import com.financetracker.security.TokenService;
+import com.financetracker.transacao.dto.FaturaVencimentoRequest;
+import com.financetracker.transacao.entity.Fatura;
+import com.financetracker.transacao.enums.StatusFatura;
+import com.financetracker.transacao.repository.FaturaRepository;
 import com.financetracker.usuario.entity.Usuario;
 import com.financetracker.usuario.repository.UsuarioRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,6 +26,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -43,6 +48,9 @@ public class CartaoControllerTest {
     private CartaoRepository cartaoRepository;
 
     @Autowired
+    private FaturaRepository faturaRepository;
+
+    @Autowired
     private ContaRepository contaRepository;
 
     @Autowired
@@ -60,6 +68,7 @@ public class CartaoControllerTest {
 
     @BeforeEach
     void setUp() {
+        faturaRepository.deleteAll();
         cartaoRepository.deleteAll();
         contaRepository.deleteAll();
         usuarioRepository.deleteAll();
@@ -350,5 +359,108 @@ public class CartaoControllerTest {
                 .andExpect(jsonPath("$.totalLimiteDisponivel").value(14200.00))
                 .andExpect(jsonPath("$.totalFaturaEstimada").value(800.00))
                 .andExpect(jsonPath("$.quantidadeCartoes").value(2));
+    }
+
+    @Test
+    @DisplayName("PATCH /api/cartoes/{id}/faturas/{faturaId}/vencimento — Ajusta vencimento pontual e mantém padrão do cartão")
+    void ajustarERestaurarVencimentoPontualFatura() throws Exception {
+        Cartao c = new Cartao();
+        c.setUsuario(usuarioLogado);
+        c.setNome("Nubank");
+        c.setLimite(BigDecimal.valueOf(5000.00));
+        c.setLimiteDisponivel(BigDecimal.valueOf(4500.00));
+        c.setDiaFechamento(21);
+        c.setDiaVencimento(28);
+        c.setConta(contaValida);
+        c.setAtivo(true);
+        c = cartaoRepository.save(c);
+
+        Fatura f = new Fatura();
+        f.setUsuario(usuarioLogado);
+        f.setCartao(c);
+        f.setMesReferencia(LocalDate.of(2026, 11, 1));
+        f.setDataFechamento(LocalDate.of(2026, 11, 21));
+        f.setDataVencimento(LocalDate.of(2026, 11, 28));
+        f.setValorTotal(BigDecimal.valueOf(500.00));
+        f.setValorPago(BigDecimal.ZERO);
+        f.setStatus(StatusFatura.FECHADA);
+        f = faturaRepository.save(f);
+
+        // 1. Ajuste pontual para dia 30/11
+        FaturaVencimentoRequest ajuste = new FaturaVencimentoRequest(LocalDate.of(2026, 11, 30), false);
+        mockMvc.perform(patch("/api/cartoes/" + c.getId() + "/faturas/" + f.getId() + "/vencimento")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(ajuste)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dataVencimento").value("2026-11-30"))
+                .andExpect(jsonPath("$.dataVencimentoPadrao").value("2026-11-28"))
+                .andExpect(jsonPath("$.vencimentoAjustado").value(true));
+
+        // Confirma que o cartão manteve o diaVencimento original (28)
+        Cartao cartaoAtualizado = cartaoRepository.findById(c.getId()).orElseThrow();
+        assertEquals(28, cartaoAtualizado.getDiaVencimento());
+
+        // 2. Restaurar para o padrão
+        FaturaVencimentoRequest restaurar = new FaturaVencimentoRequest(null, true);
+        mockMvc.perform(patch("/api/cartoes/" + c.getId() + "/faturas/" + f.getId() + "/vencimento")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(restaurar)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dataVencimento").value("2026-11-28"))
+                .andExpect(jsonPath("$.dataVencimentoPadrao").value("2026-11-28"))
+                .andExpect(jsonPath("$.vencimentoAjustado").value(false));
+    }
+
+    @Test
+    @DisplayName("PATCH /api/cartoes/{id}/faturas/{faturaId}/vencimento — Rejeita data anterior ao fechamento, fatura paga e IDOR")
+    void validarRegrasAjusteVencimentoFatura() throws Exception {
+        Cartao c = new Cartao();
+        c.setUsuario(usuarioLogado);
+        c.setNome("Inter");
+        c.setLimite(BigDecimal.valueOf(3000.00));
+        c.setLimiteDisponivel(BigDecimal.valueOf(2500.00));
+        c.setDiaFechamento(21);
+        c.setDiaVencimento(28);
+        c.setConta(contaValida);
+        c.setAtivo(true);
+        c = cartaoRepository.save(c);
+
+        Fatura f = new Fatura();
+        f.setUsuario(usuarioLogado);
+        f.setCartao(c);
+        f.setMesReferencia(LocalDate.of(2026, 11, 1));
+        f.setDataFechamento(LocalDate.of(2026, 11, 21));
+        f.setDataVencimento(LocalDate.of(2026, 11, 28));
+        f.setValorTotal(BigDecimal.valueOf(500.00));
+        f.setValorPago(BigDecimal.ZERO);
+        f.setStatus(StatusFatura.FECHADA);
+        f = faturaRepository.save(f);
+
+        // Data anterior ao fechamento -> 422
+        FaturaVencimentoRequest anterior = new FaturaVencimentoRequest(LocalDate.of(2026, 11, 20), false);
+        mockMvc.perform(patch("/api/cartoes/" + c.getId() + "/faturas/" + f.getId() + "/vencimento")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(anterior)))
+                .andExpect(status().isUnprocessableEntity());
+
+        // Anti-IDOR -> 404
+        FaturaVencimentoRequest valido = new FaturaVencimentoRequest(LocalDate.of(2026, 11, 30), false);
+        mockMvc.perform(patch("/api/cartoes/" + c.getId() + "/faturas/" + f.getId() + "/vencimento")
+                        .header("Authorization", "Bearer " + tokenInvasor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(valido)))
+                .andExpect(status().isNotFound());
+
+        // Fatura já paga -> 422
+        f.setStatus(StatusFatura.PAGA);
+        faturaRepository.save(f);
+        mockMvc.perform(patch("/api/cartoes/" + c.getId() + "/faturas/" + f.getId() + "/vencimento")
+                        .header("Authorization", "Bearer " + tokenLogado)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(valido)))
+                .andExpect(status().isUnprocessableEntity());
     }
 }

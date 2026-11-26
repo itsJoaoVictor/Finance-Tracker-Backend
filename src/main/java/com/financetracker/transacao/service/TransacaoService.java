@@ -183,11 +183,8 @@ public class TransacaoService {
         int diaFechamento = cartao.getDiaFechamento();
         int diaVencimento = cartao.getDiaVencimento();
 
-        LocalDate dataFechamento = mesReferencia.withDayOfMonth(diaFechamento);
-        LocalDate dataVencimento = mesReferencia.withDayOfMonth(diaVencimento);
-        if (dataVencimento.isBefore(dataFechamento)) {
-            dataVencimento = dataVencimento.plusMonths(1);
-        }
+        LocalDate dataFechamento = com.financetracker.transacao.util.FaturaDateUtils.calcularDataFechamento(mesReferencia, diaFechamento);
+        LocalDate dataVencimento = com.financetracker.transacao.util.FaturaDateUtils.calcularDataVencimentoInicial(mesReferencia, dataFechamento, diaVencimento);
 
         Fatura fatura = new Fatura();
         fatura.setUsuario(usuario);

@@ -8,6 +8,9 @@ import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.repository.ContaRepository;
 import com.financetracker.transacao.dto.FaturaResponse;
+import com.financetracker.transacao.dto.FaturaVencimentoRequest;
+import com.financetracker.transacao.exception.FaturaNaoEncontradaException;
+import com.financetracker.transacao.util.FaturaDateUtils;
 import com.financetracker.assinatura.entity.Assinatura;
 import com.financetracker.assinatura.repository.AssinaturaRepository;
 import com.financetracker.ia.repository.IaClassificacaoAssinaturaRepository;
@@ -402,6 +405,71 @@ public class CartaoService {
                 .toList();
     }
 
+    @Transactional
+    public FaturaResponse ajustarVencimentoFatura(UUID cartaoId, UUID faturaId, FaturaVencimentoRequest request) {
+        Usuario usuario = getAuthenticatedUsuario();
+        Cartao cartao = findCartaoDoUsuario(cartaoId, usuario.getId());
+
+        Fatura fatura = faturaRepository.findByIdAndUsuarioId(faturaId, usuario.getId())
+                .filter(f -> f.getCartao().getId().equals(cartao.getId()))
+                .orElseThrow(FaturaNaoEncontradaException::new);
+
+        if (fatura.getStatus() == StatusFatura.PAGA) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Não é possível alterar o vencimento de uma fatura já paga."
+            );
+        }
+        if (fatura.isRolladoOver()) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Não é possível alterar o vencimento de uma fatura cujo saldo já foi transferido para o mês seguinte."
+            );
+        }
+
+        LocalDate novaData;
+        if (request != null && Boolean.TRUE.equals(request.restaurarPadrao())) {
+            novaData = FaturaDateUtils.calcularDataVencimentoPadrao(
+                    fatura.getMesReferencia(),
+                    fatura.getDataFechamento(),
+                    cartao.getDiaVencimento()
+            );
+        } else {
+            if (request == null || request.dataVencimento() == null) {
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "Informe a nova data de vencimento."
+                );
+            }
+            novaData = request.dataVencimento();
+        }
+
+        if (novaData.isBefore(fatura.getDataFechamento())) {
+            throw new ResponseStatusException(
+                    HttpStatus.UNPROCESSABLE_ENTITY,
+                    "A data de vencimento não pode ser anterior à data de fechamento da fatura."
+            );
+        }
+
+        fatura.setDataVencimento(novaData);
+
+        // Reavalia status caso a fatura estivesse marcada como ATRASADA (sem rollover)
+        LocalDate hoje = LocalDate.now();
+        if (fatura.getStatus() == StatusFatura.ATRASADA && !hoje.isAfter(novaData)) {
+            if (fatura.getValorPago().compareTo(BigDecimal.ZERO) > 0
+                    && fatura.getValorPago().compareTo(fatura.getValorTotal()) < 0) {
+                fatura.setStatus(StatusFatura.PAGA_PARCIAL);
+            } else if (hoje.isAfter(fatura.getDataFechamento()) || hoje.isEqual(fatura.getDataFechamento())) {
+                fatura.setStatus(StatusFatura.FECHADA);
+            } else {
+                fatura.setStatus(StatusFatura.ABERTA);
+            }
+        }
+
+        Fatura salva = faturaRepository.save(fatura);
+        return new FaturaResponse(salva);
+    }
+
     private Fatura getOrCreateFatura(Cartao cartao, Usuario usuario, LocalDate mesReferencia) {
         Optional<Fatura> existente = faturaRepository
                 .findByCartaoIdAndUsuarioIdAndMesReferencia(cartao.getId(), usuario.getId(), mesReferencia);
@@ -412,11 +480,8 @@ public class CartaoService {
         int diaFechamento = cartao.getDiaFechamento();
         int diaVencimento = cartao.getDiaVencimento();
 
-        LocalDate dataFechamento = mesReferencia.withDayOfMonth(diaFechamento);
-        LocalDate dataVencimento = mesReferencia.withDayOfMonth(diaVencimento);
-        if (dataVencimento.isBefore(dataFechamento)) {
-            dataVencimento = dataVencimento.plusMonths(1);
-        }
+        LocalDate dataFechamento = FaturaDateUtils.calcularDataFechamento(mesReferencia, diaFechamento);
+        LocalDate dataVencimento = FaturaDateUtils.calcularDataVencimentoInicial(mesReferencia, dataFechamento, diaVencimento);
 
         Fatura fatura = new Fatura();
         fatura.setUsuario(usuario);
