@@ -17,8 +17,29 @@ public record CartaoResponse(
     LocalDateTime criadoEm,
     BigDecimal faturaEstimada,
     String faturaStatus,
-    String faturaMesReferencia
+    String faturaMesReferencia,
+    String faturaDataVencimento
 ) {
+    public CartaoResponse(
+            UUID id,
+            String nome,
+            BigDecimal limite,
+            BigDecimal limiteDisponivel,
+            int diaFechamento,
+            int diaVencimento,
+            UUID contaId,
+            String corHexadecimal,
+            LocalDateTime criadoEm,
+            BigDecimal faturaEstimada,
+            String faturaStatus,
+            String faturaMesReferencia
+    ) {
+        this(
+            id, nome, limite, limiteDisponivel, diaFechamento, diaVencimento,
+            contaId, corHexadecimal, criadoEm, faturaEstimada, faturaStatus, faturaMesReferencia, null
+        );
+    }
+
     public CartaoResponse(Cartao cartao) {
         this(
             cartao.getId(),
@@ -32,11 +53,22 @@ public record CartaoResponse(
             cartao.getCriadoEm(),
             BigDecimal.ZERO,
             "ABERTA",
+            null,
             null
         );
     }
 
     public CartaoResponse(Cartao cartao, BigDecimal faturaEstimada, String faturaStatus, String faturaMesReferencia) {
+        this(cartao, faturaEstimada, faturaStatus, faturaMesReferencia, null);
+    }
+
+    public CartaoResponse(
+            Cartao cartao,
+            BigDecimal faturaEstimada,
+            String faturaStatus,
+            String faturaMesReferencia,
+            String faturaDataVencimento
+    ) {
         this(
             cartao.getId(),
             cartao.getNome(),
@@ -49,7 +81,8 @@ public record CartaoResponse(
             cartao.getCriadoEm(),
             faturaEstimada,
             faturaStatus,
-            faturaMesReferencia
+            faturaMesReferencia,
+            faturaDataVencimento
         );
     }
 }

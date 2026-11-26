@@ -188,4 +188,41 @@ class FaturaVencimentoAdjustmentTest {
                 )
         );
     }
+
+    @Test
+    @DisplayName("atualizarStatusERolloverFaturas — Prorroga automaticamente faturas existentes não pagas em fim de semana sem alterar pagas")
+    void prorrogarFaturasExistentesEmFimDeSemana() {
+        Fatura futuraFimDeSemana = new Fatura();
+        futuraFimDeSemana.setId(UUID.randomUUID());
+        futuraFimDeSemana.setUsuario(usuario);
+        futuraFimDeSemana.setCartao(cartao);
+        futuraFimDeSemana.setMesReferencia(LocalDate.of(2027, 2, 1));
+        futuraFimDeSemana.setDataFechamento(LocalDate.of(2027, 2, 21));
+        futuraFimDeSemana.setDataVencimento(LocalDate.of(2027, 2, 28)); // Domingo
+        futuraFimDeSemana.setValorTotal(BigDecimal.valueOf(200.00));
+        futuraFimDeSemana.setValorPago(BigDecimal.ZERO);
+        futuraFimDeSemana.setStatus(StatusFatura.ABERTA);
+        futuraFimDeSemana.setRolladoOver(false);
+
+        Fatura pagaFimDeSemana = new Fatura();
+        pagaFimDeSemana.setId(UUID.randomUUID());
+        pagaFimDeSemana.setUsuario(usuario);
+        pagaFimDeSemana.setCartao(cartao);
+        pagaFimDeSemana.setMesReferencia(LocalDate.of(2026, 11, 1));
+        pagaFimDeSemana.setDataFechamento(LocalDate.of(2026, 11, 21));
+        pagaFimDeSemana.setDataVencimento(LocalDate.of(2026, 11, 28)); // Sábado, mas já PAGA
+        pagaFimDeSemana.setValorTotal(BigDecimal.valueOf(300.00));
+        pagaFimDeSemana.setValorPago(BigDecimal.valueOf(300.00));
+        pagaFimDeSemana.setStatus(StatusFatura.PAGA);
+        pagaFimDeSemana.setRolladoOver(false);
+
+        when(faturaRepository.findByUsuarioId(usuario.getId()))
+                .thenReturn(List.of(futuraFimDeSemana, pagaFimDeSemana));
+        when(faturaRepository.save(any(Fatura.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cartaoService.atualizarStatusERolloverFaturas(usuario);
+
+        assertEquals(LocalDate.of(2027, 3, 1), futuraFimDeSemana.getDataVencimento());
+        assertEquals(LocalDate.of(2026, 11, 28), pagaFimDeSemana.getDataVencimento());
+    }
 }

@@ -7,6 +7,7 @@ import com.financetracker.cartao.repository.CartaoRepository;
 import com.financetracker.conta.entity.Conta;
 import com.financetracker.conta.exception.ContaNaoEncontradaException;
 import com.financetracker.conta.repository.ContaRepository;
+import com.financetracker.contapagar.util.DiaUtilUtils;
 import com.financetracker.transacao.dto.FaturaResponse;
 import com.financetracker.transacao.dto.FaturaVencimentoRequest;
 import com.financetracker.transacao.exception.FaturaNaoEncontradaException;
@@ -124,6 +125,7 @@ public class CartaoService {
             String status = "ABERTA";
 
             LocalDate faturaRef = null;
+            LocalDate faturaVencimento = null;
             if (faturas.isEmpty()) {
                 faturaCartao = c.getLimite().subtract(c.getLimiteDisponivel());
             } else {
@@ -139,6 +141,7 @@ public class CartaoService {
                         temFechadaOuAtrasada = true;
                         if (faturaRef == null) {
                             faturaRef = f.getMesReferencia();
+                            faturaVencimento = f.getDataVencimento();
                         }
                     }
                 }
@@ -158,6 +161,7 @@ public class CartaoService {
                     faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                     status = "ABERTA";
                     faturaRef = fAtual.getMesReferencia();
+                    faturaVencimento = fAtual.getDataVencimento();
                 } else {
                     // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
                     for (Fatura f : faturas) {
@@ -165,6 +169,7 @@ public class CartaoService {
                             BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
                             faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                             faturaRef = f.getMesReferencia();
+                            faturaVencimento = f.getDataVencimento();
                             break;
                         }
                     }
@@ -177,7 +182,13 @@ public class CartaoService {
                 faturaRef = mesReferenciaAtual;
             }
 
-            return new CartaoResponse(c, faturaCartao, status, faturaRef.toString());
+            return new CartaoResponse(
+                    c,
+                    faturaCartao,
+                    status,
+                    faturaRef.toString(),
+                    faturaVencimento != null ? faturaVencimento.toString() : null
+            );
         }).toList();
     }
 
@@ -193,6 +204,7 @@ public class CartaoService {
         BigDecimal faturaCartao = BigDecimal.ZERO;
         String status = "ABERTA";
         LocalDate faturaRef = null;
+        LocalDate faturaVencimento = null;
 
         if (faturas.isEmpty()) {
             faturaCartao = cartao.getLimite().subtract(cartao.getLimiteDisponivel());
@@ -209,6 +221,7 @@ public class CartaoService {
                     temFechadaOuAtrasada = true;
                     if (faturaRef == null) {
                         faturaRef = f.getMesReferencia();
+                        faturaVencimento = f.getDataVencimento();
                     }
                 }
             }
@@ -228,6 +241,7 @@ public class CartaoService {
                     faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                     status = "ABERTA";
                     faturaRef = fAtual.getMesReferencia();
+                    faturaVencimento = fAtual.getDataVencimento();
                 } else {
                     // Se não houver faturas abertas com saldo, usa a fatura do mês atual de referência mesmo que zerada
                     for (Fatura f : faturas) {
@@ -235,6 +249,7 @@ public class CartaoService {
                             BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
                             faturaCartao = restante.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : restante;
                             faturaRef = f.getMesReferencia();
+                            faturaVencimento = f.getDataVencimento();
                             break;
                         }
                     }
@@ -246,7 +261,13 @@ public class CartaoService {
         if (faturaRef == null) {
             faturaRef = mesReferenciaAtual;
         }
-        return new CartaoResponse(cartao, faturaCartao, status, faturaRef.toString());
+        return new CartaoResponse(
+                cartao,
+                faturaCartao,
+                status,
+                faturaRef.toString(),
+                faturaVencimento != null ? faturaVencimento.toString() : null
+        );
     }
 
     @Transactional
@@ -513,6 +534,21 @@ public class CartaoService {
         List<Fatura> faturas = faturaRepository.findByUsuarioId(usuario.getId());
 
         for (Fatura f : faturas) {
+            // Prorroga automaticamente faturas existentes (não pagas e não roladas)
+            // cuja data ainda está no padrão original em fim de semana ou feriado nacional
+            if (f.getStatus() != StatusFatura.PAGA && !f.isRolladoOver()
+                    && f.getCartao() != null && f.getMesReferencia() != null && f.getDataFechamento() != null) {
+                LocalDate padraoOriginal = FaturaDateUtils.calcularDataVencimentoPadrao(
+                        f.getMesReferencia(),
+                        f.getDataFechamento(),
+                        f.getCartao().getDiaVencimento()
+                );
+                if (f.getDataVencimento().equals(padraoOriginal) && !DiaUtilUtils.isDiaUtil(f.getDataVencimento())) {
+                    f.setDataVencimento(DiaUtilUtils.proximoDiaUtil(f.getDataVencimento()));
+                    faturaRepository.save(f);
+                }
+            }
+
             BigDecimal restante = f.getValorTotal().subtract(f.getValorPago());
 
             // Se passou do vencimento
