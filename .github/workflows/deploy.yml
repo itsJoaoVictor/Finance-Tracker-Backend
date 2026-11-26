@@ -25,7 +25,7 @@ jobs:
         run: mvn clean package -s settings.xml -DskipTests
 
       - name: Tailscale
-        uses: tailscale/github-action@v2
+        uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
